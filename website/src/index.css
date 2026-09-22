@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@theme {
+  --color-nova-bg: #05070B;
+  --color-nova-text: #F5F7FA;
+  --color-nova-muted: #9CA7B8;
+  --color-nova-border: rgba(255,255,255,0.08);
+  --color-nova-accent: #3B82F6;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-display: "Manrope", "Inter", sans-serif;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #05070B;
+  color: #F5F7FA;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(59,130,246,0.3);
+}
+
+/* subtle grid */
+.bg-grid {
+  background-image: 
+    radial-gradient(ellipse 800px 600px at 50% -10%, rgba(59,130,246,0.12), transparent 60%),
+    radial-gradient(ellipse 600px 400px at 80% 20%, rgba(59,130,246,0.06), transparent 60%),
+    linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+}
+
+/* glass */
+.glass {
+  background: rgba(255,255,255,0.03);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.glass-hover:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.12);
+}
+
+/* focus */
+:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
