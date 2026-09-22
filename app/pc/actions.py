@@ -241,6 +241,10 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
     for trig in ("open ", "launch ", "start ", "run ", "go to "):
         if norm.startswith(trig):
             target = norm[len(trig):].strip().rstrip(" .")
+            # Ambiguous generic browser should not be fast-path — let LLM clarify
+            if target in ("browser", "my browser", "the browser", "my browser please", "the browser please"):
+                logger.info("Ambiguous browser request: %r -> defer to LLM/clarification", target)
+                return False, "I can't perform that action yet."
             # Try website first already done, now app
             # Normalize target for app aliases (brave browser etc)
             if target in APPLICATION_ALIASES:
@@ -294,3 +298,76 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
     # Unknown command
     logger.info("Unsupported command: %r", norm[:120])
     return False, "I can't perform that action yet."
+
+
+def execute_structured_action(data: dict, controller: PCController) -> tuple[bool, str]:
+    """Execute validated structured action via PC controller. Returns (ok, response)."""
+    if not isinstance(data, dict):
+        return False, "I couldn't understand that command."
+    action = data.get("action", "")
+    if action == "unsupported":
+        reason = data.get("reason", "")
+        logger.info("LLM unsupported: %r", reason)
+        return False, "I can't perform that action yet."
+    if action == "clarification":
+        msg = data.get("message", "Which option should I use?")
+        logger.info("LLM clarification: %r", msg)
+        return False, msg
+
+    try:
+        if action == "open_application":
+            app = data.get("application", "")
+            ok, msg = controller.open_application(app)
+            return ok, msg if ok else msg
+        if action == "open_url":
+            website = data.get("website")
+            url = data.get("url")
+            target = website if website else url
+            if not target:
+                return False, "I couldn't understand that command."
+            # website vs url
+            if website:
+                ok, msg = controller.open_url(website)
+            else:
+                ok, msg = controller.open_url(url)
+            return ok, msg
+        if action == "type_text":
+            text = data.get("text", "")
+            ok, msg = controller.type_text(text)
+            return ok, msg
+        if action == "press_key":
+            key = data.get("key", "")
+            ok, msg = controller.press_key(key)
+            return ok, msg
+        if action == "hotkey":
+            keys = data.get("keys", [])
+            if not isinstance(keys, list):
+                return False, "I couldn't understand that command."
+            ok, msg = controller.hotkey(*keys)
+            return ok, msg
+        if action == "scroll":
+            amount = data.get("amount")
+            if amount is None:
+                direction = data.get("direction", "")
+                if isinstance(direction, str) and direction.lower() == "up":
+                    amount = controller.default_scroll
+                elif isinstance(direction, str) and direction.lower() == "down":
+                    amount = -controller.default_scroll
+                else:
+                    amount = controller.default_scroll
+            ok, msg = controller.scroll(int(amount))
+            return ok, msg
+        if action == "click":
+            ok, msg = controller.click()
+            return ok, msg
+        if action == "double_click":
+            ok, msg = controller.double_click()
+            return ok, msg
+        if action == "right_click":
+            ok, msg = controller.right_click()
+            return ok, msg
+    except Exception as exc:
+        logger.exception("Structured action execution failed %r: %s", data, exc)
+        return False, "I couldn't perform that action."
+
+    return False, "I couldn't understand that command."

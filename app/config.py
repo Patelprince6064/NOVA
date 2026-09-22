@@ -36,6 +36,12 @@ class Config:
     pc_control_enabled: bool = True
     default_scroll_amount: int = 5
     action_timeout_seconds: int = 10
+    # LLM / Natural language (Phase 5)
+    llm_enabled: bool = False
+    llm_provider: str = "openai"
+    llm_model: str = ""
+    llm_api_key: str = ""
+    llm_timeout_seconds: int = 10
 
     @classmethod
     def load(cls) -> "Config":
@@ -107,6 +113,13 @@ class Config:
         pc_control_enabled = _env_bool("PC_CONTROL_ENABLED", True)
         default_scroll_amount = _env_int("DEFAULT_SCROLL_AMOUNT", 5)
         action_timeout_seconds = _env_int("ACTION_TIMEOUT_SECONDS", 10)
+        llm_enabled = _env_bool("LLM_ENABLED", False)
+        llm_provider = _env_str("LLM_PROVIDER", "openai")
+        llm_model = os.getenv("LLM_MODEL", "") or ""
+        llm_model = llm_model.strip()
+        llm_api_key = os.getenv("LLM_API_KEY", "") or ""
+        llm_api_key = llm_api_key.strip()
+        llm_timeout_seconds = _env_int("LLM_TIMEOUT_SECONDS", 10)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -150,6 +163,9 @@ class Config:
         if not 1 <= action_timeout_seconds <= 30:
             logger.warning("ACTION_TIMEOUT_SECONDS=%d out of range (1-30), clamping to 10.", action_timeout_seconds)
             action_timeout_seconds = 10
+        if not 1 <= llm_timeout_seconds <= 60:
+            logger.warning("LLM_TIMEOUT_SECONDS=%d out of range (1-60), clamping to 10.", llm_timeout_seconds)
+            llm_timeout_seconds = 10
 
         config = cls(
             whisper_model=whisper_model,
@@ -171,9 +187,14 @@ class Config:
             pc_control_enabled=pc_control_enabled,
             default_scroll_amount=default_scroll_amount,
             action_timeout_seconds=action_timeout_seconds,
+            llm_enabled=llm_enabled,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            llm_api_key=llm_api_key,
+            llm_timeout_seconds=llm_timeout_seconds,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -193,5 +214,9 @@ class Config:
             "enabled" if pc_control_enabled else "disabled",
             default_scroll_amount,
             action_timeout_seconds,
+            "enabled" if llm_enabled else "disabled",
+            llm_provider,
+            llm_model or "default",
+            llm_timeout_seconds,
         )
         return config

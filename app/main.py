@@ -1,14 +1,11 @@
-"""Nova Voice Engine — Phase 4 hands-free + PC control entry point.
+"""Nova Voice Engine — Phase 5 natural language + PC control entry point.
 
 Flow hands-free:
-    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController
+    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> AI Interpreter
     -> LISTENING_FOR_WAKE_WORD --"Hey Nova"--> LISTENING_FOR_COMMAND
-    -> PROCESSING (Whisper) -> PC action -> SPEAKING (TTS) -> back to wake word
+    -> PROCESSING (Whisper) -> Fast local router -> LLM (if needed, validated) -> PC action -> SPEAKING -> back
 
-Flow manual (fallback):
-    Press ENTER to record -> Transcribe -> PC action -> Speak
-
-Privacy: audio in RAM only. Wake local, PC actions allowlisted, no shell injection.
+Privacy: audio RAM only, LLM only gets transcribed text when needed, no shell/code exec, validated actions only.
 """
 
 import argparse
@@ -41,7 +38,11 @@ from app.speech.transcriber import Transcriber
 from app.tts.speaker import Speaker
 from app.wakeword.detector import WakeWordDetector, WakeWordState
 from app.pc.controller import PCController
-from app.pc.actions import handle_command
+from app.pc.actions import handle_command, execute_structured_action
+try:
+    from app.ai.interpreter import CommandInterpreter
+except ImportError:
+    CommandInterpreter = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -70,6 +71,89 @@ def generate_response(text: str) -> str:
     if "test" in low:
         return "Voice system is working correctly."
     return f"I heard you say: {text.strip()}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Natural language routing helper (fast local + LLM fallback)
+# ---------------------------------------------------------------------------
+
+def route_pc_command(text: str, controller: PCController, interpreter, config) -> str:
+    """Route via fast local router, fallback to LLM if needed.
+
+    Architecture:
+        text -> fast handle_command -> if known (PC or friendly) -> done
+        else if LLM enabled & available -> interpreter -> validate -> execute -> response
+        else -> original unknown response
+
+    Returns response string to speak.
+    """
+    if not text or not text.strip():
+        return ""
+    # If PC control disabled, fall back to friendly responses only
+    if not config.pc_control_enabled:
+        return generate_response(text)
+
+    # Fast local path — executes PC action if matched
+    try:
+        handled, fast_resp = handle_command(text, controller)
+    except Exception as exc:
+        logger.exception("Fast router failed: %s", exc)
+        handled, fast_resp = False, "I couldn't understand that command."
+
+    # Cases where fast router succeeded (PC action or friendly hello)
+    friendly_set = {
+        "Hello! I'm Nova.",
+        "Hi! I'm ready.",
+        "I'm doing great. I'm ready for your next command.",
+        "Voice system is working correctly.",
+    }
+    if handled:
+        # PC action executed locally — immediate response, no LLM needed
+        logger.info("Fast path: PC action executed -> %r", fast_resp)
+        return fast_resp
+    if fast_resp in friendly_set:
+        logger.info("Fast path: friendly response -> %r", fast_resp)
+        return fast_resp
+    if fast_resp == "I can handle one basic action at a time right now.":
+        logger.info("Fast path: multi-step rejected")
+        return fast_resp
+    # If fast_resp is "I can't perform..." -> unknown/ambiguous, try LLM
+    if fast_resp == "I can't perform that action yet.":
+        if interpreter is not None and interpreter.is_available():
+            logger.info("Fast path unknown -> trying LLM interpreter")
+            try:
+                validated, err = interpreter.interpret(text)
+                if validated is not None:
+                    # Dispatch validated action to PC controller
+                    # validated already includes unsupported/clarification meta
+                    if validated.get("action") in ("unsupported", "clarification"):
+                        # For these meta actions, don't execute PC, just respond
+                        if validated["action"] == "unsupported":
+                            return "I can't perform that action yet."
+                        else:
+                            return validated.get("message", "Which option should I use?")
+                    ok, msg = execute_structured_action(validated, controller)
+                    logger.info("LLM path executed: %r -> %r", validated, msg)
+                    return msg
+                else:
+                    logger.info("LLM interpreted no action (err=%s), returning fast response", err)
+                    if err and "timeout" in err.lower():
+                        return "I couldn't process that command right now."
+                    # For validation failures, treat as unknown
+                    if err and "Validation" in err:
+                        return "I couldn't understand that command."
+                    # LLM unavailable / empty -> keep fast response but generic
+                    return "I couldn't understand that command." if "LLM not configured" in err else fast_resp
+            except Exception as exc:
+                logger.warning("LLM route error: %s", exc)
+                return "I couldn't process that command right now."
+        else:
+            # LLM disabled or no key -> keep fast path response (handles local commands still work)
+            logger.debug("LLM not available, returning fast path unknown")
+            return fast_resp
+
+    # Fallback: return fast_resp for any other case (including empty)
+    return fast_resp
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +484,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
             tts_status = "UNAVAILABLE"
     wake_status = "DISABLED" if not config.wake_word_enabled else f"READY (\"{config.wake_word}\")"
     pc_status = "ENABLED" if config.pc_control_enabled else "DISABLED"
+    llm_status = "ENABLED" if config.llm_enabled and config.llm_api_key else ("DISABLED (no key)" if config.llm_enabled else "DISABLED")
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
@@ -410,6 +495,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     if config.wake_word_enabled:
         print(f"   Threshold: {config.wake_word_threshold}  Cooldown: {config.wake_word_cooldown_ms}ms  Timeout: {config.command_timeout_seconds}s")
     print(f"🖥️  PC control: {pc_status} (scroll={config.default_scroll_amount} timeout={config.action_timeout_seconds}s)")
+    print(f"🧠 Natural language: {llm_status} (provider={config.llm_provider} model={config.llm_model or 'default'})")
     print(f"Sample Rate: {config.sample_rate} Hz")
     print(f"Mode: {mode}")
     print("\nStatus: READY")
@@ -425,13 +511,13 @@ def main() -> None:
     parser.add_argument("--help", action="store_true", help="Show help")
     args, _unknown = parser.parse_known_args()
     if args.help:
-        print("Nova Voice Engine — Phase 4")
-        print("  python -m app.main          # hands-free wake-word + PC control (default)")
-        print("  python -m app.main --manual # manual ENTER mode (Phase 1/2 compat)")
+        print("Nova Voice Engine — Phase 5")
+        print("  python -m app.main          # hands-free wake-word + natural language (default)")
+        print("  python -m app.main --manual # manual ENTER mode")
         print("  python -m app.main --help   # this help")
         print("")
-        print("PC control examples: 'open Notepad', 'open YouTube', 'type Hello World',")
-        print("  'press Enter', 'press Control C', 'scroll down', 'click'")
+        print("Examples: 'open Brave' | 'Could you launch my Brave browser?'")
+        print("  'open YouTube' | 'Take me to YouTube' | 'type Hello World' | 'press Control C'")
         sys.exit(0)
 
     logger.info("Nova Voice Engine starting...")
@@ -520,6 +606,36 @@ def main() -> None:
     else:
         print("PC control: Disabled (PC_CONTROL_ENABLED=false)\n")
         logger.info("PC control disabled by config.")
+
+    # ---- Initialize AI interpreter (Phase 5) ----
+    interpreter = None
+    if config.llm_enabled:
+        if CommandInterpreter is None:
+            print("WARNING: LLM enabled but ai module not available.\n")
+            logger.warning("CommandInterpreter import failed")
+        elif not config.llm_api_key:
+            print("WARNING: LLM_ENABLED=true but LLM_API_KEY is empty — LLM will be unavailable.")
+            print("Local commands will still work.\n")
+            logger.warning("LLM enabled but no API key")
+            try:
+                interpreter = CommandInterpreter(config)
+            except Exception as exc:
+                logger.warning("Failed to init interpreter without key: %s", exc)
+        else:
+            try:
+                interpreter = CommandInterpreter(config)
+                if interpreter.is_available():
+                    print(f"Natural language: Enabled (provider={config.llm_provider} model={config.llm_model or 'default'})\n")
+                    logger.info("LLM interpreter available: %s %s", config.llm_provider, config.llm_model or "default")
+                else:
+                    print("Natural language: LLM not available (check API key/provider).\n")
+                    logger.warning("LLM interpreter not available after init")
+            except Exception as exc:
+                print(f"WARNING: Failed to initialize LLM interpreter: {exc}")
+                logger.warning("LLM init failed: %s", exc)
+    else:
+        print("Natural language: Local only (LLM_ENABLED=false) — fast router active.\n")
+        logger.info("LLM disabled, using fast local router only")
 
     print_banner(config, selected, speaker, mode_str)
 
@@ -693,18 +809,13 @@ def main() -> None:
                         print(f'  "{text}"')
                         logger.info("Transcription: %r (hands-free)", text[:120])
 
-                    # ---- SPEAKING (Phase 4: PC control routing) ----
+                    # ---- SPEAKING (Phase 5: fast local + LLM) ----
                     state = WakeWordState.SPEAKING
-                    # Route via PC controller if enabled, else legacy responses
-                    if config.pc_control_enabled:
-                        try:
-                            # handle_command executes PC action locally, no LLM
-                            _handled, response = handle_command(text, pc_controller)
-                        except Exception as exc:
-                            logger.exception("PC command handling failed: %s", exc)
-                            response = "I couldn't perform that action."
-                    else:
-                        response = generate_response(text)
+                    try:
+                        response = route_pc_command(text, pc_controller, interpreter, config)
+                    except Exception as exc:
+                        logger.exception("Route failed: %s", exc)
+                        response = "I couldn't process that command right now."
                     if response:
                         print("\n🔊 Nova:\n")
                         print(f'  "{response}"')
@@ -818,16 +929,13 @@ def main() -> None:
                 else:
                     print("📝 You said:\n")
                     print(f'  "{text}"')
-                # Route via PC control if enabled
+                # Route via Phase 5 helper (fast + LLM)
                 if text and text.strip():
-                    if config.pc_control_enabled:
-                        try:
-                            _handled, response = handle_command(text, pc_controller)
-                        except Exception as exc:
-                            logger.exception("PC command handling failed: %s", exc)
-                            response = "I couldn't perform that action."
-                    else:
-                        response = generate_response(text)
+                    try:
+                        response = route_pc_command(text, pc_controller, interpreter, config)
+                    except Exception as exc:
+                        logger.exception("Route failed: %s", exc)
+                        response = "I couldn't process that command right now."
                 else:
                     response = ""
                 if response:
