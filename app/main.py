@@ -11,6 +11,7 @@ Privacy: audio RAM only, screenshots on demand, vision only when needed, no cont
 
 import argparse
 import logging
+import os
 import sys
 import time
 import threading
@@ -87,6 +88,17 @@ try:
 except ImportError:
     PerfTimer = None  # type: ignore
     global_metrics = None  # type: ignore
+try:
+    from app.tray.tray import create_tray
+    from app.hotkey.controller import HotkeyController
+    from app.startup.windows import sync_startup_setting
+    from app.health.checker import run_health_check, print_health
+except ImportError:
+    create_tray = None  # type: ignore
+    HotkeyController = None  # type: ignore
+    sync_startup_setting = None  # type: ignore
+    run_health_check = None  # type: ignore
+    print_health = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1254,6 +1266,117 @@ def main() -> None:
 
     print_banner(config, selected, speaker, mode_str)
 
+    # ---- Phase 12: Health check + startup validation + degraded mode ----
+    try:
+        health = run_health_check(config) if run_health_check else {}
+        print("\n=================================")
+        print(f"        {config.nova_name.upper()} ASSISTANT")
+        print("=================================\n")
+        if print_health and health:
+            print_health(health, verbose=False)
+        else:
+            print("Nova is ready.\n")
+        if health and not health.get("microphone"):
+            print("Microphone unavailable — voice input will fail. Check Windows sound settings.")
+        if config.llm_enabled and health and not health.get("ai"):
+            print("AI features are disabled because the API configuration is missing. Basic PC commands will still work.")
+        if config.browser_enabled and health and not health.get("browser"):
+            print("Browser control unavailable (Playwright not installed). Run setup_browser.bat")
+        if config.vision_enabled and health and not health.get("vision"):
+            print("Screen vision is disabled.\n")
+        if config.browser_enabled is False:
+            logger.info("Browser disabled mode — basic commands still work")
+        if config.vision_enabled is False:
+            logger.info("Vision disabled mode")
+        if config.llm_enabled is False:
+            logger.info("AI disabled mode — local commands still work")
+    except Exception as exc:
+        logger.warning("Health check failed: %s", exc)
+        print("Nova is ready.\n")
+
+    # Clean startup message per spec
+    print("Starting Nova...")
+    checks = []
+    try:
+        checks.append(("Speech", transcriber.is_loaded if hasattr(transcriber, "is_loaded") else True))
+    except: checks.append(("Speech", False))
+    checks.append(("Wake word", config.wake_word_enabled))
+    checks.append(("Voice", speaker.is_available if speaker else False))
+    checks.append(("PC control", config.pc_control_enabled))
+    checks.append(("Browser", config.browser_enabled))
+    checks.append(("AI", config.llm_enabled and bool(config.llm_api_key)))
+    for name, ok in checks:
+        mark = "✓" if ok else "✗"
+        print(f"{mark} {name}")
+    print("Nova is ready.\n")
+
+    # ---- Phase 12: Startup sync (opt-in, no admin) ----
+    try:
+        if sync_startup_setting:
+            sync_startup_setting(config)
+    except Exception as exc:
+        logger.warning("Startup sync failed: %s", exc)
+
+    # ---- Phase 12: System tray (lightweight, degraded gracefully) ----
+    nova_tray = None
+    tray_status = {"value": "Ready"}
+    def _get_status():
+        return tray_status.get("value", "Ready")
+    # Control object for tray pause/resume
+    class _TrayControl:
+        def __init__(self):
+            self._paused = False
+        def pause(self):
+            self._paused = True
+            tray_status["value"] = "Paused"
+            logger.info("Tray: Paused")
+        def resume(self):
+            self._paused = False
+            tray_status["value"] = "Ready"
+            logger.info("Tray: Resumed")
+        def test_voice(self):
+            try: speaker.speak("Voice test.")
+            except: pass
+        def restart(self):
+            logger.info("Tray restart requested — will exit and rely on external restart")
+            os._exit(0)
+        def exit(self):
+            logger.info("Tray exit requested")
+            os._exit(0)
+        @property
+        def is_paused(self): return self._paused
+    tray_control = _TrayControl()
+    if create_tray and config.start_in_tray:
+        try:
+            nova_tray = create_tray(config=config, status_getter=_get_status, control=tray_control)
+            nova_tray.start()
+        except Exception as exc:
+            logger.warning("Tray start failed: %s", exc)
+    else:
+        logger.info("Tray disabled (START_IN_TRAY=false or not available)")
+
+    # ---- Phase 12: Global hotkeys (optional, graceful) ----
+    hotkey_controller = None
+    def _toggle_hotkey_cb():
+        if tray_control.is_paused:
+            tray_control.resume()
+        else:
+            tray_control.pause()
+    def _stop_hotkey_cb():
+        try:
+            if interrupt_manager:
+                interrupt_manager.request_stop()
+            speaker.stop()
+            if agent_executor:
+                agent_executor.cancel()
+        except: pass
+    if HotkeyController:
+        try:
+            hotkey_controller = HotkeyController(config=config, toggle_callback=_toggle_hotkey_cb, stop_callback=_stop_hotkey_cb)
+            hotkey_controller.start()
+        except Exception as exc:
+            logger.warning("Hotkey start failed: %s", exc)
+
     # -------------------------------------------------------------------
     # Hands-free wake-word loop — Phase 9 conversation mode
     # -------------------------------------------------------------------
@@ -1329,10 +1452,22 @@ def main() -> None:
             while not stop_requested.is_set():
                 if stop_requested.is_set():
                     break
+                # Phase 12: Pause handling via tray/hotkey
+                try:
+                    if 'tray_control' in locals() and tray_control and tray_control.is_paused:
+                        tray_status["value"] = "Paused"
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        if tray_status.get("value") == "Paused":
+                            tray_status["value"] = "Ready"
+                except Exception:
+                    pass
 
                 # State: waiting for wake word
                 if state == WakeWordState.LISTENING_FOR_WAKE_WORD:
                     logger.info("[WAKE] Waiting for wake word")
+                    tray_status["value"] = "Ready"
                     # Also handle conversation timeout if previously active (should be reset already)
                     if conversation_manager and conversation_manager.handle_timeout_if_needed():
                         logger.info("[TIMEOUT] Conversation timed out — back to wake")
@@ -1350,6 +1485,10 @@ def main() -> None:
                         conversation_manager.set_state(ConversationState.WAKE_DETECTED)
                         logger.info("[CONTEXT] Conversation active")
                     state = WakeWordState.LISTENING_FOR_COMMAND
+                    tray_status["value"] = "Listening"
+                    try:
+                        if 'nova_tray' in locals() and nova_tray: nova_tray.update_status("Listening")
+                    except: pass
                     # fall through to conversation loop — detector already paused by callback
                     # Brief pause to let detector drain
                     time.sleep(0.12)
@@ -1386,6 +1525,10 @@ def main() -> None:
                                 logger.info("[CONTEXT] Conversation active turn %d", turn_in_conversation)
                                 print(f"\n[CONVERSATION_ACTIVE] Listening for follow-up ({turn_in_conversation+1}/{config.max_conversation_turns}) — no wake word needed.\n")
                         state = WakeWordState.LISTENING_FOR_COMMAND
+                        tray_status["value"] = "Listening"
+                        try:
+                            if 'nova_tray' in locals() and nova_tray: nova_tray.update_status("Listening")
+                        except: pass
                         logger.info("[LISTENING] Listening for command (turn %d)", turn_in_conversation+1)
                         print("\n🎤 LISTENING..." if turn_in_conversation==0 else "\n🎤 LISTENING (follow-up)...")
                         print("Speak now (say your command).\n" if turn_in_conversation==0 else "Speak follow-up (or wait to timeout).\n")
@@ -1503,6 +1646,10 @@ def main() -> None:
 
                         # ---- PROCESSING ----
                         state = WakeWordState.PROCESSING
+                        tray_status["value"] = "Processing"
+                        try:
+                            if 'nova_tray' in locals() and nova_tray: nova_tray.update_status("Processing")
+                        except: pass
                         if conversation_manager:
                             conversation_manager.set_state(ConversationState.PROCESSING)
                         print("\nTranscribing...\n")
@@ -1838,6 +1985,10 @@ def main() -> None:
                                 pass
 
                         # ---- SPEAKING ----
+                        tray_status["value"] = "Speaking"
+                        try:
+                            if 'nova_tray' in locals() and nova_tray: nova_tray.update_status("Speaking")
+                        except: pass
                         if perf_timer:
                             perf_timer.start("tts")
                         if conversation_manager:
@@ -1923,6 +2074,15 @@ def main() -> None:
                 detector.stop()
             except Exception as exc:
                 logger.warning("Detector stop error: %s", exc)
+            # Phase 12: stop tray/hotkey on hands-free shutdown
+            try:
+                if 'nova_tray' in locals() and nova_tray:
+                    nova_tray.stop()
+            except: pass
+            try:
+                if 'hotkey_controller' in locals() and hotkey_controller:
+                    hotkey_controller.stop()
+            except: pass
             # Fall through to common shutdown
 
 
@@ -2062,6 +2222,22 @@ def main() -> None:
 
     # ---- Common clean shutdown ----
     logger.info("Shutting down Nova...")
+    # Phase 12: stop tray/hotkey
+    try:
+        if 'nova_tray' in locals() and nova_tray:
+            try: nova_tray.stop()
+            except: pass
+    except: pass
+    try:
+        if 'hotkey_controller' in locals() and hotkey_controller:
+            try: hotkey_controller.stop()
+            except: pass
+    except: pass
+    # Performance dashboard if debug
+    try:
+        if 'perf_metrics' in locals() and perf_metrics and getattr(config, "performance_debug", False):
+            perf_metrics.print_dashboard()
+    except: pass
     # Phase 9: clear conversation context on exit
     try:
         if 'conversation_manager' in locals() and conversation_manager is not None:
@@ -2069,6 +2245,11 @@ def main() -> None:
             logger.info("[RESET] Conversation reset on shutdown")
     except Exception:
         pass
+    # Phase 10: clear interrupt
+    try:
+        if 'interrupt_manager' in locals() and interrupt_manager:
+            interrupt_manager.clear_stop()
+    except: pass
     try:
         if 'browser_controller' in locals() and browser_controller is not None:
             try:

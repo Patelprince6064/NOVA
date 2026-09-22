@@ -14,6 +14,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Config:
+    nova_name: str = "Nova"
+    log_level: str = "INFO"
+    log_max_mb: int = 5
+    log_backup_count: int = 3
+    start_with_windows: bool = False
+    start_minimized: bool = True
+    start_in_tray: bool = True
+    global_hotkey_enabled: bool = False
+    toggle_hotkey: str = "ctrl+shift+n"
+    stop_hotkey: str = "ctrl+shift+x"
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
@@ -136,6 +146,19 @@ class Config:
             logger.warning("Invalid boolean for %s=%r, using default %r", key, raw, default)
             return default
 
+        nova_name = _env_str("NOVA_NAME", "Nova")
+        log_level = _env_str("LOG_LEVEL", "INFO").upper()
+        if log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            logger.warning("LOG_LEVEL=%r invalid, using INFO", log_level)
+            log_level = "INFO"
+        log_max_mb = _env_int("LOG_MAX_MB", 5)
+        log_backup_count = _env_int("LOG_BACKUP_COUNT", 3)
+        start_with_windows = _env_bool("START_WITH_WINDOWS", False)
+        start_minimized = _env_bool("START_MINIMIZED", True)
+        start_in_tray = _env_bool("START_IN_TRAY", True)
+        global_hotkey_enabled = _env_bool("GLOBAL_HOTKEY_ENABLED", False)
+        toggle_hotkey = _env_str("TOGGLE_HOTKEY", "ctrl+shift+n").lower()
+        stop_hotkey = _env_str("STOP_HOTKEY", "ctrl+shift+x").lower()
         whisper_model = _env_str("WHISPER_MODEL", "base")
         whisper_device = _env_str("WHISPER_DEVICE", "cpu")
         whisper_compute_type = _env_str("WHISPER_COMPUTE_TYPE", "int8")
@@ -315,6 +338,14 @@ class Config:
         if not 10 <= task_timeout_seconds <= 300:
             logger.warning("TASK_TIMEOUT_SECONDS=%d out of range (10-300), clamping to 60.", task_timeout_seconds)
             task_timeout_seconds = 60
+        if not 1 <= log_max_mb <= 50:
+            logger.warning("LOG_MAX_MB=%d out of range (1-50), clamping to 5.", log_max_mb)
+            log_max_mb = 5
+        if not 1 <= log_backup_count <= 10:
+            logger.warning("LOG_BACKUP_COUNT=%d out of range (1-10), clamping to 3.", log_backup_count)
+            log_backup_count = 3
+        if not isinstance(nova_name, str) or not nova_name.strip():
+            nova_name = "Nova"
         # Clamp max_recording to new Phase 11 default 10
         if max_recording_seconds > 15:
             logger.warning("MAX_RECORDING_SECONDS=%d large, recommended 10 for latency", max_recording_seconds)
@@ -322,6 +353,16 @@ class Config:
             logger.warning("COMMAND_TIMEOUT_SECONDS=%d large, recommended 6 for latency", command_timeout_seconds)
 
         config = cls(
+            nova_name=nova_name.strip(),
+            log_level=log_level,
+            log_max_mb=log_max_mb,
+            log_backup_count=log_backup_count,
+            start_with_windows=start_with_windows,
+            start_minimized=start_minimized,
+            start_in_tray=start_in_tray,
+            global_hotkey_enabled=global_hotkey_enabled,
+            toggle_hotkey=toggle_hotkey,
+            stop_hotkey=stop_hotkey,
             whisper_model=whisper_model,
             whisper_device=whisper_device,
             whisper_compute_type=whisper_compute_type,

@@ -34,7 +34,11 @@ desktop.ini
 # .cache/
 
 # Logs
+logs/
 *.log
+
+# Playwright
+.playwright/
 
 # Audio (privacy — never commit recordings)
 *.wav
