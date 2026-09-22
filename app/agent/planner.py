@@ -52,6 +52,14 @@ class TaskPlanner:
         self.timeout = config.llm_timeout_seconds
         key_hint = (self.api_key[:4] + "…") if self.api_key else "none"
         logger.info("TaskPlanner init: enabled=%s max_steps=%d llm=%s model=%s key=%s", self.enabled, self.max_steps, self.llm_enabled, self.model, key_hint)
+        self._client = None
+        if self.llm_enabled and self.api_key and self.provider == "openai":
+            try:
+                from openai import OpenAI
+                self._client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+                logger.info("Planner OpenAI client reused")
+            except Exception as exc:
+                logger.warning("Planner client reuse failed: %s", exc)
 
     def is_available(self) -> bool:
         return bool(self.enabled)
@@ -79,11 +87,14 @@ class TaskPlanner:
         return plan
 
     def _plan_via_llm(self, text: str, context: Optional[dict] = None) -> Optional[TaskPlan]:
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise RuntimeError("openai not installed")
-        client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+        if self._client is not None:
+            client = self._client
+        else:
+            try:
+                from openai import OpenAI
+            except ImportError:
+                raise RuntimeError("openai not installed")
+            client = OpenAI(api_key=self.api_key, timeout=self.timeout)
         # Truncate long request
         txt = text.strip()[:800]
         # Inject context for follow-up (Phase 9) — e.g., "Play the first one" needs prior search

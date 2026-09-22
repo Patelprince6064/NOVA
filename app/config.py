@@ -77,6 +77,12 @@ class Config:
     interruption_check_interval_ms: int = 100
     post_cancel_cooldown_ms: int = 300
     interruption_listening_enabled: bool = True
+    # Performance (Phase 11) — latency & reliability
+    silence_timeout_ms: int = 700
+    min_speech_duration_ms: int = 250
+    performance_debug: bool = False
+    stt_timeout_seconds: int = 8
+    task_timeout_seconds: int = 60
 
     @classmethod
     def load(cls) -> "Config":
@@ -134,7 +140,7 @@ class Config:
         whisper_device = _env_str("WHISPER_DEVICE", "cpu")
         whisper_compute_type = _env_str("WHISPER_COMPUTE_TYPE", "int8")
         sample_rate = _env_int("SAMPLE_RATE", 16000)
-        max_recording_seconds = _env_int("MAX_RECORDING_SECONDS", 15)
+        max_recording_seconds = _env_int("MAX_RECORDING_SECONDS", 10)
         tts_enabled = _env_bool("TTS_ENABLED", True)
         tts_rate = _env_int("TTS_RATE", 175)
         tts_volume = _env_float("TTS_VOLUME", 1.0)
@@ -142,7 +148,7 @@ class Config:
         wake_word_enabled = _env_bool("WAKE_WORD_ENABLED", True)
         wake_word = _env_str("WAKE_WORD", "hey nova")
         wake_word_threshold = _env_float("WAKE_WORD_THRESHOLD", 0.5)
-        command_timeout_seconds = _env_int("COMMAND_TIMEOUT_SECONDS", 8)
+        command_timeout_seconds = _env_int("COMMAND_TIMEOUT_SECONDS", 6)
         wake_sound_enabled = _env_bool("WAKE_SOUND_ENABLED", True)
         wake_word_cooldown_ms = _env_int("WAKE_WORD_COOLDOWN_MS", 500)
         pc_control_enabled = _env_bool("PC_CONTROL_ENABLED", True)
@@ -190,6 +196,11 @@ class Config:
         interruption_check_interval_ms = _env_int("INTERRUPTION_CHECK_INTERVAL_MS", 100)
         post_cancel_cooldown_ms = _env_int("POST_CANCEL_COOLDOWN_MS", 300)
         interruption_listening_enabled = _env_bool("INTERRUPTION_LISTENING_ENABLED", True)
+        silence_timeout_ms = _env_int("SILENCE_TIMEOUT_MS", 700)
+        min_speech_duration_ms = _env_int("MIN_SPEECH_DURATION_MS", 250)
+        performance_debug = _env_bool("PERFORMANCE_DEBUG", False)
+        stt_timeout_seconds = _env_int("STT_TIMEOUT_SECONDS", 8)
+        task_timeout_seconds = _env_int("TASK_TIMEOUT_SECONDS", 60)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -292,6 +303,23 @@ class Config:
         if not 0 <= post_cancel_cooldown_ms <= 2000:
             logger.warning("POST_CANCEL_COOLDOWN_MS=%d out of range (0-2000), clamping to 300.", post_cancel_cooldown_ms)
             post_cancel_cooldown_ms = 300
+        if not 200 <= silence_timeout_ms <= 2000:
+            logger.warning("SILENCE_TIMEOUT_MS=%d out of range (200-2000), clamping to 700.", silence_timeout_ms)
+            silence_timeout_ms = 700
+        if not 100 <= min_speech_duration_ms <= 1000:
+            logger.warning("MIN_SPEECH_DURATION_MS=%d out of range (100-1000), clamping to 250.", min_speech_duration_ms)
+            min_speech_duration_ms = 250
+        if not 1 <= stt_timeout_seconds <= 30:
+            logger.warning("STT_TIMEOUT_SECONDS=%d out of range (1-30), clamping to 8.", stt_timeout_seconds)
+            stt_timeout_seconds = 8
+        if not 10 <= task_timeout_seconds <= 300:
+            logger.warning("TASK_TIMEOUT_SECONDS=%d out of range (10-300), clamping to 60.", task_timeout_seconds)
+            task_timeout_seconds = 60
+        # Clamp max_recording to new Phase 11 default 10
+        if max_recording_seconds > 15:
+            logger.warning("MAX_RECORDING_SECONDS=%d large, recommended 10 for latency", max_recording_seconds)
+        if command_timeout_seconds > 10:
+            logger.warning("COMMAND_TIMEOUT_SECONDS=%d large, recommended 6 for latency", command_timeout_seconds)
 
         config = cls(
             whisper_model=whisper_model,
@@ -348,9 +376,14 @@ class Config:
             interruption_check_interval_ms=interruption_check_interval_ms,
             post_cancel_cooldown_ms=post_cancel_cooldown_ms,
             interruption_listening_enabled=interruption_listening_enabled,
+            silence_timeout_ms=silence_timeout_ms,
+            min_speech_duration_ms=min_speech_duration_ms,
+            performance_debug=performance_debug,
+            stt_timeout_seconds=stt_timeout_seconds,
+            task_timeout_seconds=task_timeout_seconds,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d conv=%s timeout=%d follow=%d max_turns=%d ctx=%s cooldown=%d interrupt=%s stop_cmds=%s interval=%d cancel_cooldown=%d intr_listen=%s",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d conv=%s timeout=%d follow=%d max_turns=%d ctx=%s cooldown=%d interrupt=%s stop_cmds=%s interval=%d cancel_cooldown=%d intr_listen=%s silence=%d min_speech=%d perf_debug=%s stt_timeout=%d task_timeout=%d",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -403,5 +436,10 @@ class Config:
             interruption_check_interval_ms,
             post_cancel_cooldown_ms,
             "enabled" if interruption_listening_enabled else "disabled",
+            silence_timeout_ms,
+            min_speech_duration_ms,
+            "enabled" if performance_debug else "disabled",
+            stt_timeout_seconds,
+            task_timeout_seconds,
         )
         return config

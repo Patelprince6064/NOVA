@@ -81,6 +81,12 @@ except ImportError:
     is_retry_command = None  # type: ignore
     get_interrupt_priority = None  # type: ignore
     get_global_stop_event = None  # type: ignore
+try:
+    from app.performance.timer import PerfTimer
+    from app.performance.metrics import global_metrics
+except ImportError:
+    PerfTimer = None  # type: ignore
+    global_metrics = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -765,13 +771,25 @@ def record_command_auto(
     timeout_seconds: int,
     silence_threshold: float = 0.015,
     min_speech_duration: float = 0.3,
+    silence_timeout_ms: int = 700,
+    config=None,
 ) -> Optional[np.ndarray]:
     """Record command after wake word, with timeout and silence handling.
 
     Records up to timeout_seconds. Uses simple VAD: if speech starts, wait for
-    ~1.2s of continuous silence after speech to stop early. If no speech within
-    timeout, returns empty (timeout).
+    silence_timeout (default 0.7s from config) of continuous silence after speech to stop early.
+    If no speech within timeout, returns empty (timeout).
+    Phase 11: configurable silence_timeout_ms / min_speech_duration_ms for faster response.
     """
+    # Use config values if provided (Phase 11 optimization)
+    if config is not None:
+        try:
+            silence_timeout_ms = int(getattr(config, "silence_timeout_ms", silence_timeout_ms))
+            min_ms = int(getattr(config, "min_speech_duration_ms", int(min_speech_duration*1000)))
+            min_speech_duration = max(0.1, min_ms / 1000.0)
+        except Exception:
+            pass
+    silence_timeout_sec = max(0.2, silence_timeout_ms / 1000.0)
     if sd is None:
         print("ERROR: sounddevice not installed.")
         return None
@@ -842,11 +860,10 @@ def record_command_auto(
                 else:
                     if has_speech:
                         silence_since += 0.12  # approx chunk duration
-                        # If we have had 1.2s of continuous silence after speech started and at least 0.6s speech, stop early
-                        if silence_since >= 1.2:
-                            # Ensure we captured at least 0.6s of audio total with speech
+                        # Phase 11: configurable silence timeout (0.7s default) for faster stop
+                        if silence_since >= silence_timeout_sec:
                             total_dur = sum(len(c) for c in chunks) / sample_rate
-                            if total_dur >= 0.6:
+                            if total_dur >= max(0.6, min_speech_duration + 0.2):
                                 logger.info("Silence after speech (%.1fs) — stopping early", silence_since)
                                 break
                 # Drain extra queued chunks quickly
@@ -860,9 +877,9 @@ def record_command_auto(
                 # No chunk this interval — count as silence if we had speech
                 if has_speech:
                     silence_since += 0.12
-                    if silence_since >= 1.2:
+                    if silence_since >= silence_timeout_sec:
                         total_dur = sum(len(c) for c in chunks) / sample_rate if chunks else 0
-                        if total_dur >= 0.6:
+                        if total_dur >= max(0.6, min_speech_duration + 0.2):
                             logger.info("Silence timeout after speech — stopping")
                             break
                 continue
@@ -1182,6 +1199,18 @@ def main() -> None:
         print(f"WARNING: Interruption init failed: {exc}\n")
         logger.warning("Interruption init failed: %s", exc)
 
+    # ---- Initialize Performance metrics (Phase 11) ----
+    perf_timer = None
+    perf_metrics = None
+    try:
+        if PerfTimer is not None and global_metrics is not None:
+            perf_timer = PerfTimer()
+            perf_metrics = global_metrics
+            print(f"Performance: {'Debug ON' if config.performance_debug else 'Debug off'} (silence={config.silence_timeout_ms}ms min_speech={config.min_speech_duration_ms}ms)\n")
+            logger.info("Performance metrics initialized: debug=%s", config.performance_debug)
+    except Exception as exc:
+        logger.warning("Performance init failed: %s", exc)
+
     # ---- Initialize Agent planner/executor (Phase 8) ----
     agent_planner = None
     agent_executor = None
@@ -1361,13 +1390,22 @@ def main() -> None:
                         print("\n🎤 LISTENING..." if turn_in_conversation==0 else "\n🎤 LISTENING (follow-up)...")
                         print("Speak now (say your command).\n" if turn_in_conversation==0 else "Speak follow-up (or wait to timeout).\n")
 
+                        # Phase 11: timing — total + recording
+                        if perf_timer:
+                            perf_timer.start("total")
+                            perf_timer.start("recording")
                         # Choose timeout: first command uses COMMAND_TIMEOUT, follow-ups use FOLLOW_UP
                         timeout_seconds = config.command_timeout_seconds if turn_in_conversation == 0 else config.follow_up_timeout_seconds
                         audio = record_command_auto(
                             device_index=selected.index,
                             sample_rate=config.sample_rate,
                             timeout_seconds=timeout_seconds,
+                            config=config,
                         )
+                        if perf_timer:
+                            rec = perf_timer.stop("recording")
+                            if perf_metrics:
+                                perf_metrics.record("recording", rec)
 
                         if audio is None:
                             print("\nCommand cancelled.")
@@ -1469,9 +1507,21 @@ def main() -> None:
                             conversation_manager.set_state(ConversationState.PROCESSING)
                         print("\nTranscribing...\n")
                         logger.info("[PROCESSING] Transcription started (hands-free)")
+                        if perf_timer:
+                            perf_timer.start("transcription")
                         try:
                             text = transcriber.transcribe(audio, sample_rate=config.sample_rate)
+                            if perf_timer:
+                                tr = perf_timer.stop("transcription")
+                                if perf_metrics:
+                                    perf_metrics.record("transcription", tr)
+                                    perf_metrics.record("stt", tr)
                         except RuntimeError as exc:
+                            if perf_timer:
+                                try: perf_timer.stop("transcription")
+                                except Exception: pass
+                            if perf_metrics:
+                                perf_metrics.increment_command(is_error=True)
                             print(f"\n❌ Unable to transcribe audio.\nDetails: {exc}")
                             logger.error("Transcription failed: %s", exc)
                             del audio
@@ -1482,6 +1532,11 @@ def main() -> None:
                                 pass
                             continue
                         except Exception as exc:
+                            if perf_timer:
+                                try: perf_timer.stop("transcription")
+                                except Exception: pass
+                            if perf_metrics:
+                                perf_metrics.increment_command(is_error=True)
                             print(f"\n❌ Unexpected transcription error: {exc}")
                             logger.exception("Unexpected")
                             del audio
@@ -1692,6 +1747,9 @@ def main() -> None:
                                 break
 
                         # ---- EXECUTING ----
+                        if perf_timer:
+                            perf_timer.start("execution")
+                            perf_timer.start("router")
                         state = WakeWordState.SPEAKING  # will be set correctly below
                         if conversation_manager:
                             conversation_manager.set_state(ConversationState.EXECUTING)
@@ -1762,8 +1820,26 @@ def main() -> None:
                             except Exception as exc:
                                 logger.exception("Route failed: %s", exc)
                                 response = "I couldn't process that command right now."
+                        # Phase 11: stop router/execution timers
+                        if perf_timer:
+                            try:
+                                router_t = perf_timer.stop("router")
+                                exec_t = perf_timer.stop("execution")
+                                if perf_metrics:
+                                    perf_metrics.record("router", router_t)
+                                    perf_metrics.record("execution", exec_t)
+                                    # Determine if LLM was used: if response came via LLM path, execution time >0.05 and config.llm_enabled
+                                    is_llm = False
+                                    # Heuristic: if response was not from fast local router (fast router would be <0.02s)
+                                    if router_t > 0.02 and config.llm_enabled:
+                                        # Could be LLM, count conservatively
+                                        pass
+                            except Exception:
+                                pass
 
                         # ---- SPEAKING ----
+                        if perf_timer:
+                            perf_timer.start("tts")
                         if conversation_manager:
                             conversation_manager.set_state(ConversationState.SPEAKING)
                         state = WakeWordState.SPEAKING
@@ -1775,6 +1851,29 @@ def main() -> None:
                             speak_with_cooldown(speaker, detector, response, config.post_tts_cooldown_ms)
                         else:
                             logger.debug("Empty response")
+                        if perf_timer:
+                            try:
+                                tts_t = perf_timer.stop("tts")
+                                if perf_metrics:
+                                    perf_metrics.record("tts", tts_t)
+                            except Exception:
+                                pass
+
+                        # Phase 11: total timing + metrics
+                        if perf_timer:
+                            try:
+                                total_t = perf_timer.stop("total")
+                                if perf_metrics:
+                                    perf_metrics.record("total", total_t)
+                                    # Determine if LLM vs local for metrics
+                                    is_llm = False
+                                    # Simple heuristic: if LLM enabled and transcription non-empty and router took >0.05
+                                    # We approximate; detailed LLM tracking is inside interpreter
+                                    perf_metrics.increment_command(is_llm=is_llm, is_error=("couldn't" in (response or "").lower()))
+                                    if config.performance_debug:
+                                        perf_metrics.print_dashboard()
+                            except Exception:
+                                pass
 
                         # ---- Update conversation context & turn ----
                         if conversation_manager:

@@ -262,8 +262,11 @@ class BrowserController:
                 self._page.wait_for_load_state("domcontentloaded", timeout=self.timeout_ms)
             except Exception:
                 pass
-            # Small wait for results to render
-            time.sleep(1.0)
+            # Phase 11: condition-based wait, not fixed long sleep
+            try:
+                self._page.wait_for_selector("ytd-video-renderer, #contents ytd-video-renderer", timeout=1500)
+            except Exception:
+                time.sleep(0.5)
             self.current_url = self._page.url
             try:
                 self.current_title = self._page.title()

@@ -49,6 +49,16 @@ class CommandInterpreter:
         key_hint = (self.api_key[:4] + "…") if self.api_key else "none"
         logger.info("CommandInterpreter init: enabled=%s provider=%s model=%s key=%s timeout=%s",
                     self.enabled, self.provider, self.model, key_hint, self.timeout)
+        # Phase 11: reuse OpenAI client
+        self._client = None
+        if self.is_available():
+            try:
+                from openai import OpenAI
+                self._client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+                logger.info("OpenAI client reused")
+            except Exception as exc:
+                logger.warning("Failed to init reused OpenAI client: %s", exc)
+                self._client = None
 
     def is_available(self) -> bool:
         return bool(self.enabled and self.api_key and self.provider in ("openai",))
@@ -142,20 +152,22 @@ class CommandInterpreter:
             return None, str(exc)
 
     def _call_llm(self, user_text: str) -> str:
-        """Call provider. Currently openai."""
+        """Call provider. Currently openai — reuses client if available."""
         if self.provider != "openai":
             raise RuntimeError(f"Unsupported LLM provider: {self.provider}")
-
-        # Lazy import openai
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise RuntimeError("openai package not installed. pip install openai")
 
         if not self.api_key:
             raise RuntimeError("LLM_API_KEY not configured")
 
-        client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+        # Reuse client
+        if self._client is not None:
+            client = self._client
+        else:
+            try:
+                from openai import OpenAI
+            except ImportError:
+                raise RuntimeError("openai package not installed. pip install openai")
+            client = OpenAI(api_key=self.api_key, timeout=self.timeout)
         # Use chat completions — ask for JSON object
         try:
             resp = client.chat.completions.create(
