@@ -30,6 +30,10 @@ AllowedActions = [
     "browser_refresh",
     "browser_scroll",
     "close_browser",
+    # Vision actions Phase 7
+    "analyze_screen",
+    "find_screen_element",
+    "get_active_window",
     # Meta actions (not PC, just responses)
     "unsupported",
     "clarification",
@@ -259,5 +263,25 @@ def validate_action(data: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str,
                 return False, "browser_scroll amount out of range", None
             return True, "", {"action": "browser_scroll", "amount": amount}
         return True, "", {"action": "browser_scroll", "amount": -500}
+
+    # Vision actions Phase 7
+    if action == "analyze_screen":
+        q = data.get("question") or data.get("q") or data.get("prompt")
+        if q is not None and not isinstance(q, str):
+            return False, "analyze_screen question must be string", None
+        # question optional, defaults to generic
+        question = q.strip() if isinstance(q, str) and q.strip() else "What is on my screen?"
+        if len(question) > 300:
+            return False, "analyze_screen question too long", None
+        return True, "", {"action": "analyze_screen", "question": question}
+    if action == "find_screen_element":
+        target = data.get("target") or data.get("label") or data.get("query")
+        if not isinstance(target, str) or not target.strip():
+            return False, "find_screen_element requires 'target' string", None
+        if len(target) > 100:
+            return False, "find_screen_element target too long", None
+        return True, "", {"action": "find_screen_element", "target": target.strip()}
+    if action == "get_active_window":
+        return True, "", {"action": "get_active_window"}
 
     return False, f"Unhandled action '{action}'", None

@@ -4,52 +4,51 @@ Hands-free PC voice assistant (Windows).
 
 ## Current Phase
 
-**Phase 6 — Browser Control (Playwright)**
+**Phase 7 — Screen Understanding + Visual Control Foundation**
 
 ```
 👂 "Hey Nova"
       ↓
-🎤 Listening
+🎤 Listening (no ENTER)
       ↓
 📝 STT (faster-whisper)
       ↓
-🧠 Fast router → LLM (validated JSON only)
+🧠 Fast router (vision → browser → pc) → LLM (validated JSON)
       ↓
-🌐 BrowserController (Playwright, reused session)
+👁️ Vision (MSS on-demand screenshot only on visual commands)
+   🌐 Browser (Playwright reused) / 🖥️ PC (allowlisted)
       ↓
 🔊 Response
 ```
 
-One browser action per utterance, no multi-step, no vision, no credentials.
+Foundation for seeing the screen, not yet autonomous clicking. No multi-step agent, no password handling.
 
 ---
 
 ## Features
 
 ### Phase 1-2: STT + TTS
-- Mic detection, 16kHz, `faster-whisper`; `pyttsx3`
+- `faster-whisper` 16kHz, `pyttsx3` SAPI5
 
 ### Phase 3: Wake Word
-- `vosk` `hey nova`, state machine, `--manual`
+- `vosk` `hey nova`, state machine, `winsound` beep, `--manual`
 
 ### Phase 4: PC Control
-- Apps/websites, type, keys, hotkeys, mouse via allowlists
+- Apps/websites, type, keys, hotkeys allowlisted, mouse, `win32gui` foreground window
 
 ### Phase 5: Natural Language
-- LLM `CommandInterpreter` (openai), `validate_action` strict, `SYSTEM_PROMPT` JSON only, fast path bypasses LLM
+- `CommandInterpreter` (openai), `validate_action`, fast local bypasses LLM
 
-### Phase 6 — Browser Control (new)
-- **Playwright** reused `BrowserController` (`chromium`/`firefox`/`webkit`, `headless=false` so user sees browser)
-- **Sites:** `app/browser/sites.py` `WEBSITE_ALIASES` + `google_search_url` / `youtube_search_url`
-- **Open website:** `open_url` alias or URL → `page.goto`
-- **Search web:** `search_web` → `https://www.google.com/search?q=...` URL encoded
-- **YouTube search:** `youtube_search` → robust selectors `input#search`, `ytd-searchbox` etc. → fill + Enter, fallback to URL
-- **Navigation:** `browser_back` / `browser_forward` / `browser_refresh` via `page.go_back/forward/reload`
-- **Scroll:** `browser_scroll` via `page.mouse.wheel` (no `pyautogui` coordinates)
-- **Close:** `close_browser` only Nova's session, not all browsers
-- **State:** `running`, `current_url`, `title` in memory, reused session not per-command launch
-- **Validation:** extended `schemas.py` `search_web/youtube_search/browser_* /close_browser`, `prompts.py` browser examples, never `page.click(...code)`
-- **Privacy/Security:** no screenshots, cookies, history, passwords, no page content to LLM, only `query` needed
+### Phase 6: Browser
+- Playwright `BrowserController` reused, `open_url/search_web/youtube_search/back/forward/refresh/scroll/close`, `sites.py` aliases
+
+### Phase 7 — Vision (new)
+- **`app/vision/screenshot.py` `ScreenCapture`**: MSS primary (fallback PIL ImageGrab), `list_monitors()` (primary/all/1/2), `capture_screen()`→PIL in memory (not saved), resize to `SCREENSHOT_MAX_WIDTH/HEIGHT` preserving aspect, `vision_to_screen()` coordinate conversion with monitor offset/scale, `capture_and_encode()` base64 PNG for vision API, on-demand only.
+- **`app/vision/schemas.py`**: `ScreenElement` (type `button/text/input/link/image/icon/menu/window/unknown`, `label,x,y,width,height,confidence`, `center()`, `is_valid()`), `ScreenAnalysis` (description, elements, active_window, monitor, confidence), `FindResult` (found,x,y,width,height,confidence), `validate_element()` with `VISION_MIN_CONFIDENCE` (default 0.70).
+- **`app/vision/analyzer.py` `ScreenAnalyzer`**: provider abstraction (openai vision `gpt-4o-mini`/`gpt-4o`), `analyze(question, active_window)` and `find_element(target, active_window)` — captures via `ScreenCapture`, sends base64 + question to vision API only when visual command triggered, handles timeout `VISION_TIMEOUT_SECONDS` (15), fallback local description (`active_window is open. Screen ...`) when no API key, confidence filtering, `safe_click(element)` only if `VISION_CLICK_TEST_ENABLED=true` and confidence≥threshold (default disabled).
+- **Active window:** `PCController.get_foreground_window()` via `win32gui` (title, position, size) used as hint for vision.
+- **Routing:** `app/main.py` `route_pc_command` vision fast local `_handle_vision_local` before browser/pc — triggers on `"what is on my screen" / "what do you see" / "what app is open" / "where is the …" / "find the …"`; normal `open Brave` does NOT capture; LLM validated vision actions `analyze_screen`/`find_screen_element`/`get_active_window` dispatched to `ScreenAnalyzer` with on-demand screenshot, timeout `Screen analysis timed out.` not crash.
+- **Privacy:** screenshots in RAM only, not logged/saved/uploaded unless explicit visual command, not sent while idle, not sent to text LLM, only to vision provider for that request; `VISION_MIN_CONFIDENCE` rejects low results; `VISION_CLICK_TEST_ENABLED=false` default prevents arbitrary clicking.
 
 ---
 
@@ -72,10 +71,12 @@ playwright install chromium
 
 Vosk model auto-downloads to `models/vosk-model-small-en-us-0.15`.
 
-LLM (optional):
+Configure:
 ```powershell
 copy .env.example .env
-# LLM_ENABLED=true LLM_API_KEY=sk-...
+notepad .env
+# LLM: LLM_ENABLED=true LLM_API_KEY=sk-... (for natural + vision)
+# Vision: VISION_ENABLED=true VISION_PROVIDER=openai VISION_MODEL=gpt-4o-mini VISION_API_KEY=sk-... (fallback to LLM key) VISION_TIMEOUT_SECONDS=15 SCREEN_MONITOR=primary SCREENSHOT_MAX_WIDTH=1600 VISION_MIN_CONFIDENCE=0.70 VISION_CLICK_TEST_ENABLED=false
 ```
 
 ---
@@ -84,13 +85,18 @@ copy .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `WHISPER_MODEL` | `base` |  |
-| `BROWSER_ENABLED` | `true` |  |
-| `BROWSER_NAME` | `chromium` | `chromium/firefox/webkit` |
-| `BROWSER_HEADLESS` | `false` | `false` = visible |
-| `BROWSER_TIMEOUT_MS` | `10000` | 1k–60k |
-| `LLM_ENABLED` | `false` |  |
-| `PC_CONTROL_ENABLED` | `true` |  |
+| `VISION_ENABLED` | `true` | Enable vision |
+| `VISION_PROVIDER` | `""` (→llm_provider) | `openai` |
+| `VISION_MODEL` | `gpt-4o-mini` | vision model |
+| `VISION_API_KEY` | _(llm key fallback)_ | vision API key |
+| `VISION_TIMEOUT_SECONDS` | `15` | 1–60 |
+| `SCREEN_MONITOR` | `primary` | `primary/all/1/2` |
+| `SCREENSHOT_MAX_WIDTH` | `1600` | 320–3840 |
+| `SCREENSHOT_MAX_HEIGHT` | `1000` | 240–2160 |
+| `VISION_MIN_CONFIDENCE` | `0.70` | 0–1 |
+| `VISION_CLICK_TEST_ENABLED` | `false` | safe click gate |
+
+Plus Phase 1-6 vars (WHISPER, TTS, WAKE, PC, BROWSER, LLM).
 
 ---
 
@@ -100,12 +106,10 @@ Hands-free:
 ```powershell
 python -m app.main
 # 👂 Waiting for "hey nova"...
-# Hey Nova → "open YouTube" → YouTube loads
-# Hey Nova → "search YouTube for Arijit Singh" → YouTube search results
-# Hey Nova → "search Google for Python tutorials" → Google results
-# Hey Nova → "go back" → browser back
-# Hey Nova → "scroll down" → Playwright scroll
-# Hey Nova → "close the browser" → Nova's browser closes
+# Hey Nova → "what is on my screen?" → captures → "Google Chrome is open. YouTube is visible."
+# Hey Nova → "where is the YouTube search box?" → "I found YouTube search box near 740, 120."
+# Hey Nova → "what application is open?" → "Visual Studio Code is open."
+# Hey Nova → "open YouTube" → (no screenshot)
 ```
 
 Manual:
@@ -113,14 +117,16 @@ Manual:
 python -m app.main --manual
 ```
 
-Supported browser natural variations (fast without LLM for exact, LLM for natural):
+Visual natural variations via LLM:
 ```
-"Open YouTube" / "Go to YouTube" / "Take me to YouTube"
-"Search YouTube for Arijit Singh" / "Find Arijit Singh on YouTube" / "Look up Arijit Singh on YouTube"
-"Search Google for Python tutorials" / "Google Python tutorials" / "Look up Python tutorials"
-"Go back" / "Go forward" / "Refresh" / "Scroll down" / "Close the browser"
+"What is on my screen?" → analyze_screen
+"What do you see?" → analyze_screen
+"Find the YouTube search box." → find_screen_element
+"Where is the Play button?" → find_screen_element
+"Is there a browser open?" → get_active_window
 ```
-Per spec one action per utterance; `open Brave, go to YouTube…` → `I can handle one basic action…`
+
+One visual action per utterance; low confidence → "I'm not confident enough…"; not found → "I couldn't find that…"; timeout → "Screen analysis timed out."
 
 ---
 
@@ -129,20 +135,21 @@ Per spec one action per utterance; `open Brave, go to YouTube…` → `I can han
 ```
 nova/
 ├── app/
-│   ├── main.py                 # PC+Browser+LLM routing, lifecycle
-│   ├── config.py               # +BROWSER .env
+│   ├── main.py                 # vision/browser/pc + LLM routing, on-demand capture
+│   ├── config.py               # +VISION
 │   ├── speech/transcriber.py
 │   ├── tts/speaker.py
 │   ├── wakeword/detector.py
 │   ├── pc/{controller,actions}
-│   ├── ai/{interpreter,schemas,prompts}
-│   └── browser/                # NEW Phase 6
+│   ├── ai/{interpreter,schemas,prompts}  # +vision actions
+│   ├── browser/{controller,actions,sites}
+│   └── vision/                 # NEW Phase 7
 │       ├── __init__.py
-│       ├── controller.py       # BrowserController Playwright
-│       ├── actions.py          # handle_browser_command fast router
-│       └── sites.py            # WEBSITE_ALIASES + URL helpers
+│       ├── screenshot.py       # ScreenCapture MSS
+│       ├── analyzer.py         # ScreenAnalyzer vision
+│       └── schemas.py          # ScreenElement etc.
 ├── .env.example
-├── requirements.txt            # +playwright
+├── requirements.txt            # +mss, Pillow
 └── README.md
 ```
 
@@ -150,7 +157,7 @@ nova/
 
 ## Privacy / Safety
 
-- Wake/STT/TTS/PC local; browser Playwright local, no screenshots/cookies/history to LLM, only `query`/`website` needed; no password/CAPTCHA/purchase; no `pyautogui.click(x,y)` for browser; single action per command.
+- Screenshots on-demand only for `analyze_screen`/`find_screen_element`, not for `open Brave` etc.; in RAM, base64 not logged, not saved, not sent while idle, only to vision provider for that request, not to text LLM; `VISION_MIN_CONFIDENCE` gate, `VISION_CLICK_TEST_ENABLED=false` blocks auto click; never continuous upload, no passwords.
 
 ---
 
@@ -161,8 +168,9 @@ nova/
 - [x] Phase 3 Wake Word
 - [x] Phase 4 PC Control
 - [x] Phase 5 Natural Language
-- [x] Phase 6 Browser Control (current)
-- [ ] Phase 7+ vision, multi-step
+- [x] Phase 6 Browser Control
+- [x] Phase 7 Screen Understanding (current)
+- [ ] Phase 8 multi-step visual agent
 
 ## License
 

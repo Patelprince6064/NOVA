@@ -47,6 +47,17 @@ class Config:
     browser_name: str = "chromium"
     browser_headless: bool = False
     browser_timeout_ms: int = 10000
+    # Vision (Phase 7)
+    vision_enabled: bool = True
+    vision_provider: str = ""
+    vision_model: str = ""
+    vision_api_key: str = ""
+    vision_timeout_seconds: int = 15
+    screen_monitor: str = "primary"
+    screenshot_max_width: int = 1600
+    screenshot_max_height: int = 1000
+    vision_min_confidence: float = 0.70
+    vision_click_test_enabled: bool = False
 
     @classmethod
     def load(cls) -> "Config":
@@ -129,6 +140,21 @@ class Config:
         browser_name = _env_str("BROWSER_NAME", "chromium").lower().strip()
         browser_headless = _env_bool("BROWSER_HEADLESS", False)
         browser_timeout_ms = _env_int("BROWSER_TIMEOUT_MS", 10000)
+        vision_enabled = _env_bool("VISION_ENABLED", True)
+        vision_provider = _env_str("VISION_PROVIDER", "").lower().strip()
+        vision_model = os.getenv("VISION_MODEL", "") or ""
+        vision_model = vision_model.strip()
+        # VISION_API_KEY fallback to LLM_API_KEY
+        vision_api_key = os.getenv("VISION_API_KEY", "") or ""
+        vision_api_key = vision_api_key.strip()
+        if not vision_api_key:
+            vision_api_key = llm_api_key  # reuse LLM key if vision key not set
+        vision_timeout_seconds = _env_int("VISION_TIMEOUT_SECONDS", 15)
+        screen_monitor = _env_str("SCREEN_MONITOR", "primary").lower().strip()
+        screenshot_max_width = _env_int("SCREENSHOT_MAX_WIDTH", 1600)
+        screenshot_max_height = _env_int("SCREENSHOT_MAX_HEIGHT", 1000)
+        vision_min_confidence = _env_float("VISION_MIN_CONFIDENCE", 0.70)
+        vision_click_test_enabled = _env_bool("VISION_CLICK_TEST_ENABLED", False)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -181,6 +207,26 @@ class Config:
         if not 1000 <= browser_timeout_ms <= 60000:
             logger.warning("BROWSER_TIMEOUT_MS=%d out of range (1000-60000), clamping to 10000.", browser_timeout_ms)
             browser_timeout_ms = 10000
+        if screen_monitor not in ("primary", "all", "1", "2", "3", "4"):
+            # Allow numeric strings beyond 4 as well, just check if not primary/all and not digit
+            if not screen_monitor.isdigit():
+                logger.warning("SCREEN_MONITOR %r invalid, using primary", screen_monitor)
+                screen_monitor = "primary"
+        if not 320 <= screenshot_max_width <= 3840:
+            logger.warning("SCREENSHOT_MAX_WIDTH=%d out of range (320-3840), clamping to 1600.", screenshot_max_width)
+            screenshot_max_width = 1600
+        if not 240 <= screenshot_max_height <= 2160:
+            logger.warning("SCREENSHOT_MAX_HEIGHT=%d out of range (240-2160), clamping to 1000.", screenshot_max_height)
+            screenshot_max_height = 1000
+        if not 0.0 <= vision_min_confidence <= 1.0:
+            logger.warning("VISION_MIN_CONFIDENCE=%.2f out of range (0-1), clamping to 0.70", vision_min_confidence)
+            vision_min_confidence = 0.70
+        if not 1 <= vision_timeout_seconds <= 60:
+            logger.warning("VISION_TIMEOUT_SECONDS=%d out of range (1-60), clamping to 15.", vision_timeout_seconds)
+            vision_timeout_seconds = 15
+        # Vision provider defaults to llm_provider if empty and vision enabled
+        if vision_enabled and not vision_provider and llm_provider:
+            vision_provider = llm_provider
 
         config = cls(
             whisper_model=whisper_model,
@@ -211,9 +257,19 @@ class Config:
             browser_name=browser_name,
             browser_headless=browser_headless,
             browser_timeout_ms=browser_timeout_ms,
+            vision_enabled=vision_enabled,
+            vision_provider=vision_provider,
+            vision_model=vision_model,
+            vision_api_key=vision_api_key,
+            vision_timeout_seconds=vision_timeout_seconds,
+            screen_monitor=screen_monitor,
+            screenshot_max_width=screenshot_max_width,
+            screenshot_max_height=screenshot_max_height,
+            vision_min_confidence=vision_min_confidence,
+            vision_click_test_enabled=vision_click_test_enabled,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -241,5 +297,14 @@ class Config:
             browser_name,
             "yes" if browser_headless else "no",
             browser_timeout_ms,
+            "enabled" if vision_enabled else "disabled",
+            vision_provider or "none",
+            vision_model or "default",
+            vision_timeout_seconds,
+            screen_monitor,
+            screenshot_max_width,
+            screenshot_max_height,
+            vision_min_confidence,
+            "yes" if vision_click_test_enabled else "no",
         )
         return config

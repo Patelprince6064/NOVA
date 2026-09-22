@@ -1,12 +1,12 @@
-"""Nova Voice Engine — Phase 6 browser control entry point.
+"""Nova Voice Engine — Phase 7 screen understanding entry point.
 
 Flow hands-free:
-    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> BrowserController -> AI Interpreter
+    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> BrowserController -> Vision -> AI Interpreter
     -> LISTENING_FOR_WAKE_WORD --"Hey Nova"--> LISTENING_FOR_COMMAND
-    -> PROCESSING (Whisper) -> Fast local (browser/pc) -> LLM (validated) -> Browser/PC action -> SPEAKING -> back
+    -> PROCESSING (Whisper) -> Fast vision/browser/pc -> LLM (validated) -> Vision/Browser/PC action -> SPEAKING -> back
 
-Browser: Playwright reused session, no vision/coordinates, single action per utterance.
-Privacy: audio RAM only, LLM only gets transcribed text, no browser code generation, validated actions only.
+Vision: MSS on-demand screenshot only on visual commands, not for normal commands; resized with aspect, coordinates converted.
+Privacy: audio RAM only, screenshots in memory only, sent only when visual command triggered, not continuously.
 """
 
 import argparse
@@ -15,6 +15,7 @@ import sys
 import time
 import threading
 import queue
+import re
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -42,6 +43,12 @@ from app.pc.controller import PCController
 from app.pc.actions import handle_command, execute_structured_action
 from app.browser.controller import BrowserController
 from app.browser.actions import handle_browser_command
+try:
+    from app.vision.analyzer import ScreenAnalyzer
+    from app.vision.schemas import FindResult
+except ImportError:
+    ScreenAnalyzer = None  # type: ignore
+    FindResult = None  # type: ignore
 try:
     from app.ai.interpreter import CommandInterpreter
 except ImportError:
@@ -80,18 +87,89 @@ def generate_response(text: str) -> str:
 # Phase 5: Natural language routing helper (fast local + LLM fallback)
 # ---------------------------------------------------------------------------
 
-def route_pc_command(text: str, controller: PCController, interpreter, config, browser_controller=None) -> str:
-    """Route via fast local router (browser + PC), fallback to LLM if needed.
+def _handle_vision_local(text: str, vision_analyzer, pc_controller, config) -> tuple[bool, str]:
+    """Fast local vision handling without LLM (on-demand capture). Returns (handled, response)."""
+    if vision_analyzer is None or not config.vision_enabled:
+        return False, ""
+    low = text.strip().lower()
+    # Normalize wake prefix already removed, but handle variations
+    # Active window queries
+    if any(p in low for p in ["what application is open", "what app is open", "which application is open", "what app is currently open"]):
+        try:
+            win = pc_controller.get_foreground_window() if pc_controller else None
+            if win:
+                return True, f"{win} is open."
+            return True, "I couldn't determine the active application."
+        except Exception as exc:
+            logger.warning("Active window failed: %s", exc)
+            return True, "I couldn't determine the active application."
+    if low in ("is there a browser open", "is a browser open") or "browser open" in low:
+        try:
+            win = pc_controller.get_foreground_window() if pc_controller else ""
+            if win and any(b in win.lower() for b in ["chrome", "brave", "edge", "firefox", "browser"]):
+                return True, f"Yes, {win} is open."
+            return True, "I don't see a browser open."
+        except Exception:
+            return True, "I couldn't check."
+    # Generic screen description — triggers analyzer (with fallback if no API)
+    if any(p in low for p in ["what is on my screen", "what do you see", "describe my screen", "what is visible on my screen", "what's on my screen"]):
+        try:
+            win = pc_controller.get_foreground_window() if pc_controller else None
+            analysis = vision_analyzer.analyze(low, active_window=win)
+            # Filter elements by confidence already done in analyzer
+            desc = analysis.description.strip() if analysis.description else "I see a computer screen."
+            return True, desc
+        except Exception as exc:
+            logger.warning("Vision local analyze failed: %s", exc)
+            return True, "I couldn't understand what's on the screen right now."
+    # Find element fast local (exact phrase "find the X" / "where is the X")
+    m = re.match(r"^(?:find|where is|locate)\s+(?:the\s+)?(.+)$", low)
+    if m:
+        target = m.group(1).strip().rstrip("?.!").strip()
+        # Avoid catching YouTube content search like "find arijit singh on youtube" — those are browser searches
+        # But allow UI element search like "youtube search box"
+        is_ui_target = any(k in target for k in ["search box", "button", "input", "link", "menu", "icon", "window", "notepad", "browser"])
+        if not is_ui_target:
+            if " on youtube" in low or ("youtube" in low and "search" in low):
+                return False, ""
+        # Only handle UI element-like targets
+        if is_ui_target:
+            try:
+                win = pc_controller.get_foreground_window() if pc_controller else None
+                result = vision_analyzer.find_element(target, active_window=win)
+                if result.found:
+                    return True, f"I found {result.label} near {result.x}, {result.y}."
+                else:
+                    return True, "I couldn't find that on the screen."
+            except Exception as exc:
+                logger.warning("Vision find failed: %s", exc)
+                return True, "I couldn't find that on the screen."
+    return False, ""
+
+
+def route_pc_command(text: str, controller: PCController, interpreter, config, browser_controller=None, vision_analyzer=None) -> str:
+    """Route via fast local router (vision + browser + PC), fallback to LLM if needed.
 
     Architecture:
-        text -> browser fast -> pc fast -> if known -> done
-        else if LLM enabled & available -> interpreter -> validate -> execute via appropriate controller -> response
+        text -> vision fast (on-demand screenshot) -> browser fast -> pc fast -> if known -> done
+        else if LLM enabled & available -> interpreter -> validate -> execute via appropriate controller (vision/browser/pc) -> response
         else -> original unknown response
+
+    Screenshots only on vision path. Normal commands do NOT capture.
 
     Returns response string to speak. Never generates code/shell.
     """
     if not text or not text.strip():
         return ""
+    # Vision fast local (on-demand screenshot) — before browser/pc to avoid misrouting visual questions
+    if config.vision_enabled and vision_analyzer is not None:
+        try:
+            handled_v, resp_v = _handle_vision_local(text, vision_analyzer, controller, config)
+            if handled_v:
+                logger.info("Fast path: Vision local executed -> %r", resp_v)
+                return resp_v
+        except Exception as exc:
+            logger.exception("Vision fast router failed: %s", exc)
     # Browser fast path (reuse session) — before PC to prefer Playwright for website/search
     if config.browser_enabled and browser_controller is not None:
         try:
@@ -153,9 +231,38 @@ def route_pc_command(text: str, controller: PCController, interpreter, config, b
                             return "I can't perform that action yet."
                         else:
                             return validated.get("message", "Which option should I use?")
+                    # Vision actions via ScreenAnalyzer when available
+                    vision_actions = {"analyze_screen", "find_screen_element", "get_active_window"}
+                    action = validated.get("action", "")
+                    if vision_analyzer is not None and config.vision_enabled and action in vision_actions:
+                        try:
+                            win = controller.get_foreground_window() if controller else None
+                            if action == "get_active_window":
+                                if win:
+                                    return f"{win} is open."
+                                return "I couldn't determine the active application."
+                            if action == "analyze_screen":
+                                q = validated.get("question", "What is on my screen?")
+                                analysis = vision_analyzer.analyze(q, active_window=win)
+                                if analysis.confidence < config.vision_min_confidence and analysis.confidence != 0:
+                                    return "I'm not confident enough to identify that."
+                                return analysis.description
+                            if action == "find_screen_element":
+                                target = validated.get("target", "")
+                                result = vision_analyzer.find_element(target, active_window=win)
+                                if result.found:
+                                    if result.confidence < config.vision_min_confidence:
+                                        return "I'm not confident enough to identify that."
+                                    return f"I found {result.label} near {result.x}, {result.y}."
+                                return "I couldn't find that on the screen."
+                        except TimeoutError:
+                            return "Screen analysis timed out."
+                        except Exception as exc:
+                            logger.warning("Vision execution failed: %s", exc)
+                            return "I couldn't understand what's on the screen right now."
                     # Browser actions via BrowserController when available
                     browser_actions = {"search_web", "youtube_search", "browser_back", "browser_forward", "browser_refresh", "browser_scroll", "close_browser", "open_url"}
-                    action = validated.get("action", "")
+                    # action already set
                     if browser_controller is not None and config.browser_enabled and action in browser_actions:
                         # Map validated browser action to BrowserController
                         try:
@@ -537,6 +644,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     pc_status = "ENABLED" if config.pc_control_enabled else "DISABLED"
     llm_status = "ENABLED" if config.llm_enabled and config.llm_api_key else ("DISABLED (no key)" if config.llm_enabled else "DISABLED")
     browser_status = "ENABLED" if config.browser_enabled else "DISABLED"
+    vision_status = "ENABLED" if config.vision_enabled else "DISABLED"
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
@@ -549,6 +657,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     print(f"🖥️  PC control: {pc_status} (scroll={config.default_scroll_amount} timeout={config.action_timeout_seconds}s)")
     print(f"🧠 Natural language: {llm_status} (provider={config.llm_provider} model={config.llm_model or 'default'})")
     print(f"🌐 Browser: {browser_status} ({config.browser_name} headless={config.browser_headless} timeout={config.browser_timeout_ms}ms)")
+    print(f"👁️  Vision: {vision_status} (monitor={config.screen_monitor} max={config.screenshot_max_width}x{config.screenshot_max_height} conf>={config.vision_min_confidence})")
     print(f"Sample Rate: {config.sample_rate} Hz")
     print(f"Mode: {mode}")
     print("\nStatus: READY")
@@ -564,13 +673,14 @@ def main() -> None:
     parser.add_argument("--help", action="store_true", help="Show help")
     args, _unknown = parser.parse_known_args()
     if args.help:
-        print("Nova Voice Engine — Phase 6")
-        print("  python -m app.main          # hands-free wake-word + browser control (default)")
+        print("Nova Voice Engine — Phase 7")
+        print("  python -m app.main          # hands-free wake-word + vision (default)")
         print("  python -m app.main --manual # manual ENTER mode")
         print("  python -m app.main --help   # this help")
         print("")
-        print("Examples: 'open YouTube' | 'search YouTube for Arijit Singh' | 'search Google for Python tutorials'")
-        print("  'open Brave' | 'go back' | 'scroll down' | 'close the browser' | 'press Control C'")
+        print("Examples: 'what is on my screen?' | 'where is the YouTube search box?' | 'what app is open?'")
+        print("  'open YouTube' | 'search YouTube for Arijit Singh' | 'press Control C'")
+        print("Visual commands capture screenshot on demand only.")
         sys.exit(0)
 
     logger.info("Nova Voice Engine starting...")
@@ -711,6 +821,48 @@ def main() -> None:
     else:
         print("Browser control: Disabled (BROWSER_ENABLED=false)\n")
         logger.info("Browser control disabled by config")
+
+    # ---- Initialize Vision analyzer (Phase 7) ----
+    vision_analyzer = None
+    if config.vision_enabled:
+        if ScreenAnalyzer is None:
+            print("WARNING: Vision enabled but vision module not available.\n")
+            logger.warning("ScreenAnalyzer import failed")
+        else:
+            try:
+                vision_analyzer = ScreenAnalyzer(
+                    enabled=config.vision_enabled,
+                    provider=config.vision_provider or config.llm_provider,
+                    model=config.vision_model or config.llm_model,
+                    api_key=config.vision_api_key or config.llm_api_key,
+                    timeout_seconds=config.vision_timeout_seconds,
+                    min_confidence=config.vision_min_confidence,
+                    click_test_enabled=config.vision_click_test_enabled,
+                    screen_monitor=config.screen_monitor,
+                    max_width=config.screenshot_max_width,
+                    max_height=config.screenshot_max_height,
+                )
+                if vision_analyzer.is_available():
+                    print(f"Vision: Enabled (provider={vision_analyzer.provider} model={vision_analyzer.model or 'default'} monitor={config.screen_monitor} max={config.screenshot_max_width}x{config.screenshot_max_height} conf>={config.vision_min_confidence})\n")
+                    logger.info("Vision initialized: provider=%s model=%s", vision_analyzer.provider, vision_analyzer.model or "default")
+                    # List monitors
+                    try:
+                        mons = vision_analyzer.capture.list_monitors()
+                        if mons:
+                            print(f"Monitors detected: {len(mons)-1} + all")
+                            for m in mons[1:4]:
+                                print(f"  [{m['index']}] {m['width']}x{m['height']} at {m['left']},{m['top']} primary={m['is_primary']}")
+                            print()
+                    except Exception:
+                        pass
+                else:
+                    print("Vision: Disabled\n")
+            except Exception as exc:
+                print(f"WARNING: Vision init failed: {exc}\n")
+                logger.warning("Vision init failed: %s", exc)
+    else:
+        print("Vision: Disabled (VISION_ENABLED=false)\n")
+        logger.info("Vision disabled")
 
     print_banner(config, selected, speaker, mode_str)
 
@@ -887,7 +1039,7 @@ def main() -> None:
                     # ---- SPEAKING (Phase 6: browser/pc + LLM) ----
                     state = WakeWordState.SPEAKING
                     try:
-                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller)
+                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
                     except Exception as exc:
                         logger.exception("Route failed: %s", exc)
                         response = "I couldn't process that command right now."
@@ -1004,10 +1156,10 @@ def main() -> None:
                 else:
                     print("📝 You said:\n")
                     print(f'  "{text}"')
-                # Route via Phase 6 helper (browser + pc fast + LLM)
+                # Route via Phase 7 helper (vision + browser + pc fast + LLM)
                 if text and text.strip():
                     try:
-                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller)
+                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
                     except Exception as exc:
                         logger.exception("Route failed: %s", exc)
                         response = "I couldn't process that command right now."
