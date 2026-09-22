@@ -4,7 +4,7 @@ Hands-free PC voice assistant (Windows).
 
 ## Current Phase
 
-**Phase 7 — Screen Understanding + Visual Control Foundation**
+**Phase 8 — Multi-Step Task Execution**
 
 ```
 👂 "Hey Nova"
@@ -13,42 +13,52 @@ Hands-free PC voice assistant (Windows).
       ↓
 📝 STT (faster-whisper)
       ↓
-🧠 Fast router (vision → browser → pc) → LLM (validated JSON)
-      ↓
-👁️ Vision (MSS on-demand screenshot only on visual commands)
-   🌐 Browser (Playwright reused) / 🖥️ PC (allowlisted)
-      ↓
-🔊 Response
+Fast router → Multi-step? → TaskPlanner (LLM or heuristic, JSON only)
+                                        ↓
+                                Validator (allowlist, max 8, no code/shell, no unsafe)
+                                        ↓
+                                TaskExecutor (sequential, verify, retry 1, timeout 60s, cancel)
+                                        ↓
+                ┌───────────────┼───────────────┐
+                PC Tools    Browser Tools   Vision Tools
+                        └───────┼───────┘
+                                ↓
+                            TTS
 ```
 
-Foundation for seeing the screen, not yet autonomous clicking. No multi-step agent, no password handling.
+One task = 2-8 validated steps, each verified, single action per step, no autonomous code.
 
 ---
 
 ## Features
 
 ### Phase 1-2: STT + TTS
-- `faster-whisper` 16kHz, `pyttsx3` SAPI5
+- `faster-whisper` 16kHz, `pyttsx3`
 
 ### Phase 3: Wake Word
-- `vosk` `hey nova`, state machine, `winsound` beep, `--manual`
+- `vosk` `hey nova`, state machine, `--manual`
 
 ### Phase 4: PC Control
-- Apps/websites, type, keys, hotkeys allowlisted, mouse, `win32gui` foreground window
+- Apps/websites, type, keys, hotkeys allowlisted, mouse
 
 ### Phase 5: Natural Language
-- `CommandInterpreter` (openai), `validate_action`, fast local bypasses LLM
+- `CommandInterpreter` strict JSON, `validate_action`, fast path bypasses LLM
 
 ### Phase 6: Browser
-- Playwright `BrowserController` reused, `open_url/search_web/youtube_search/back/forward/refresh/scroll/close`, `sites.py` aliases
+- Playwright `BrowserController` reused, `open_url/search_web/youtube_search/back/forward/refresh/scroll/close`
 
-### Phase 7 — Vision (new)
-- **`app/vision/screenshot.py` `ScreenCapture`**: MSS primary (fallback PIL ImageGrab), `list_monitors()` (primary/all/1/2), `capture_screen()`→PIL in memory (not saved), resize to `SCREENSHOT_MAX_WIDTH/HEIGHT` preserving aspect, `vision_to_screen()` coordinate conversion with monitor offset/scale, `capture_and_encode()` base64 PNG for vision API, on-demand only.
-- **`app/vision/schemas.py`**: `ScreenElement` (type `button/text/input/link/image/icon/menu/window/unknown`, `label,x,y,width,height,confidence`, `center()`, `is_valid()`), `ScreenAnalysis` (description, elements, active_window, monitor, confidence), `FindResult` (found,x,y,width,height,confidence), `validate_element()` with `VISION_MIN_CONFIDENCE` (default 0.70).
-- **`app/vision/analyzer.py` `ScreenAnalyzer`**: provider abstraction (openai vision `gpt-4o-mini`/`gpt-4o`), `analyze(question, active_window)` and `find_element(target, active_window)` — captures via `ScreenCapture`, sends base64 + question to vision API only when visual command triggered, handles timeout `VISION_TIMEOUT_SECONDS` (15), fallback local description (`active_window is open. Screen ...`) when no API key, confidence filtering, `safe_click(element)` only if `VISION_CLICK_TEST_ENABLED=true` and confidence≥threshold (default disabled).
-- **Active window:** `PCController.get_foreground_window()` via `win32gui` (title, position, size) used as hint for vision.
-- **Routing:** `app/main.py` `route_pc_command` vision fast local `_handle_vision_local` before browser/pc — triggers on `"what is on my screen" / "what do you see" / "what app is open" / "where is the …" / "find the …"`; normal `open Brave` does NOT capture; LLM validated vision actions `analyze_screen`/`find_screen_element`/`get_active_window` dispatched to `ScreenAnalyzer` with on-demand screenshot, timeout `Screen analysis timed out.` not crash.
-- **Privacy:** screenshots in RAM only, not logged/saved/uploaded unless explicit visual command, not sent while idle, not sent to text LLM, only to vision provider for that request; `VISION_MIN_CONFIDENCE` rejects low results; `VISION_CLICK_TEST_ENABLED=false` default prevents arbitrary clicking.
+### Phase 7: Vision
+- `ScreenCapture` MSS, `ScreenAnalyzer` vision, `ScreenElement` with confidence, on-demand only
+
+### Phase 8 — Multi-Step (new)
+- **`app/agent/planner.py` `TaskPlanner`**: strict prompt (max 8 steps, only allowlisted tools, no code/shell, ask clarification if ambiguous, reject unsafe), LLM via `openai` (json_object) or heuristic fallback (splits on `and/,/then`, maps keywords, handles `open Brave, go to YouTube, search for X, play first result` → 5 steps)
+- **`app/agent/schemas.py`**: `TaskPlan`/`TaskStep` (`id, action, parameters, expected_result, timeout`), `ALLOWED_AGENT_ACTIONS` (20 actions + wait)
+- **`app/agent/validator.py`**: `validate_plan` checks allowed action, params valid (app alias, website, key, hotkey, scroll, query length), `MAX_TASK_STEPS` (8), dangerous patterns (`delete, password, bank, log into, gmail read, purchase` etc.), no `import/exec/eval/os.system/subprocess`, duplicate ids
+- **`app/agent/executor.py` `TaskExecutor`**: states `IDLE/PLANNING/VALIDATING/RUNNING/PAUSED/FAILED/COMPLETED/CANCELLED`, executes step→verify (`open_application` foreground, `open_url` browser url, `youtube_search` results, `find/click` confidence), wait `MAX_WAIT_SECONDS` (10), retry `MAX_STEP_RETRIES` (1) with 1.5s wait, timeout `MAX_TASK_DURATION_SECONDS` (60), cancel via `cancel()` (`Stop/Cancel/Never mind`), progress terminal `NOVA TASK` with ✓/→, in-memory only
+- **`wait` action**: `{"action":"wait","parameters":{"seconds":2}}` 1-10s, validated
+- **Vision steps:** `find_screen_element`→`ScreenAnalyzer.find_element` confidence≥`VISION_MIN_CONFIDENCE` (0.70), `click_screen_element`→`pyautogui.moveTo+click` after find (direct, not via demo flag, verified), `analyze_screen`→description
+- **Safety:** planner never produces `eval/exec/os.system`, validator rejects `code: page.click`, `unsafe` task (delete files, Chrome log into Gmail read emails…) rejected, `too many steps` >8 rejected `That task is too complex…`, simple `open Brave` still fast path not planner
+- **Performance:** simple commands fast, multi-step only when `is_multi_step_request` (≥2 verbs + connector) true, planner reused, LLM only when needed
 
 ---
 
@@ -69,34 +79,21 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-Vosk model auto-downloads to `models/vosk-model-small-en-us-0.15`.
-
-Configure:
-```powershell
-copy .env.example .env
-notepad .env
-# LLM: LLM_ENABLED=true LLM_API_KEY=sk-... (for natural + vision)
-# Vision: VISION_ENABLED=true VISION_PROVIDER=openai VISION_MODEL=gpt-4o-mini VISION_API_KEY=sk-... (fallback to LLM key) VISION_TIMEOUT_SECONDS=15 SCREEN_MONITOR=primary SCREENSHOT_MAX_WIDTH=1600 VISION_MIN_CONFIDENCE=0.70 VISION_CLICK_TEST_ENABLED=false
-```
-
 ---
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `VISION_ENABLED` | `true` | Enable vision |
-| `VISION_PROVIDER` | `""` (→llm_provider) | `openai` |
-| `VISION_MODEL` | `gpt-4o-mini` | vision model |
-| `VISION_API_KEY` | _(llm key fallback)_ | vision API key |
-| `VISION_TIMEOUT_SECONDS` | `15` | 1–60 |
-| `SCREEN_MONITOR` | `primary` | `primary/all/1/2` |
-| `SCREENSHOT_MAX_WIDTH` | `1600` | 320–3840 |
-| `SCREENSHOT_MAX_HEIGHT` | `1000` | 240–2160 |
-| `VISION_MIN_CONFIDENCE` | `0.70` | 0–1 |
-| `VISION_CLICK_TEST_ENABLED` | `false` | safe click gate |
+| `AGENT_ENABLED` | `true` | Enable multi-step planner |
+| `MAX_TASK_STEPS` | `8` | 1-20 |
+| `MAX_STEP_RETRIES` | `1` | 0-5 |
+| `MAX_TASK_DURATION_SECONDS` | `60` | 10-300 |
+| `MAX_WAIT_SECONDS` | `10` | 1-30 |
+| `VISION_MIN_CONFIDENCE` | `0.70` |  |
+| `VISION_CLICK_TEST_ENABLED` | `false` | Phase7 demo flag (Phase8 click_screen_element works regardless) |
 
-Plus Phase 1-6 vars (WHISPER, TTS, WAKE, PC, BROWSER, LLM).
+Plus Phase 1-7 vars.
 
 ---
 
@@ -106,10 +103,10 @@ Hands-free:
 ```powershell
 python -m app.main
 # 👂 Waiting for "hey nova"...
-# Hey Nova → "what is on my screen?" → captures → "Google Chrome is open. YouTube is visible."
-# Hey Nova → "where is the YouTube search box?" → "I found YouTube search box near 740, 120."
-# Hey Nova → "what application is open?" → "Visual Studio Code is open."
-# Hey Nova → "open YouTube" → (no screenshot)
+# Hey Nova → "open Brave and go to YouTube" → Task 2 steps → ✓ → Done.
+# Hey Nova → "open Brave, go to YouTube, search for Arijit Singh, and play the first song" → 5 steps → find+click first video → Done.
+# Hey Nova → "open Brave" → fast path (no planner) → Opening Brave.
+# During task say "Stop" → Task cancelled.
 ```
 
 Manual:
@@ -117,16 +114,7 @@ Manual:
 python -m app.main --manual
 ```
 
-Visual natural variations via LLM:
-```
-"What is on my screen?" → analyze_screen
-"What do you see?" → analyze_screen
-"Find the YouTube search box." → find_screen_element
-"Where is the Play button?" → find_screen_element
-"Is there a browser open?" → get_active_window
-```
-
-One visual action per utterance; low confidence → "I'm not confident enough…"; not found → "I couldn't find that…"; timeout → "Screen analysis timed out."
+One action per step, verified, not blind. `Stop`/`Cancel`/`Never mind` cancels.
 
 ---
 
@@ -135,21 +123,23 @@ One visual action per utterance; low confidence → "I'm not confident enough…
 ```
 nova/
 ├── app/
-│   ├── main.py                 # vision/browser/pc + LLM routing, on-demand capture
-│   ├── config.py               # +VISION
+│   ├── main.py                 # is_multi_step + planner routing, agent init
+│   ├── config.py               # +AGENT
 │   ├── speech/transcriber.py
 │   ├── tts/speaker.py
 │   ├── wakeword/detector.py
 │   ├── pc/{controller,actions}
-│   ├── ai/{interpreter,schemas,prompts}  # +vision actions
+│   ├── ai/{interpreter,schemas,prompts}
 │   ├── browser/{controller,actions,sites}
-│   └── vision/                 # NEW Phase 7
+│   ├── vision/{screenshot,analyzer,schemas}
+│   └── agent/                  # NEW Phase 8
 │       ├── __init__.py
-│       ├── screenshot.py       # ScreenCapture MSS
-│       ├── analyzer.py         # ScreenAnalyzer vision
-│       └── schemas.py          # ScreenElement etc.
+│       ├── planner.py          # TaskPlanner LLM+heuristic
+│       ├── schemas.py          # TaskPlan/Step
+│       ├── validator.py        # validate_plan safety
+│       └── executor.py         # TaskExecutor sequential
 ├── .env.example
-├── requirements.txt            # +mss, Pillow
+├── requirements.txt
 └── README.md
 ```
 
@@ -157,7 +147,7 @@ nova/
 
 ## Privacy / Safety
 
-- Screenshots on-demand only for `analyze_screen`/`find_screen_element`, not for `open Brave` etc.; in RAM, base64 not logged, not saved, not sent while idle, only to vision provider for that request, not to text LLM; `VISION_MIN_CONFIDENCE` gate, `VISION_CLICK_TEST_ENABLED=false` blocks auto click; never continuous upload, no passwords.
+- Task plans JSON only, validated before exec, no code/shell, no arbitrary file delete, no password/banking, no email, no purchases, no CAPTCHA, max 8 steps, timeout 60s, screenshots on demand only for vision steps, in-memory task state.
 
 ---
 
@@ -169,8 +159,9 @@ nova/
 - [x] Phase 4 PC Control
 - [x] Phase 5 Natural Language
 - [x] Phase 6 Browser Control
-- [x] Phase 7 Screen Understanding (current)
-- [ ] Phase 8 multi-step visual agent
+- [x] Phase 7 Vision
+- [x] Phase 8 Multi-Step (current)
+- [ ] Phase 9 full autonomy
 
 ## License
 

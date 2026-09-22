@@ -58,6 +58,12 @@ class Config:
     screenshot_max_height: int = 1000
     vision_min_confidence: float = 0.70
     vision_click_test_enabled: bool = False
+    # Agent multi-step (Phase 8)
+    agent_enabled: bool = True
+    max_task_steps: int = 8
+    max_step_retries: int = 1
+    max_task_duration_seconds: int = 60
+    max_wait_seconds: int = 10
 
     @classmethod
     def load(cls) -> "Config":
@@ -155,6 +161,11 @@ class Config:
         screenshot_max_height = _env_int("SCREENSHOT_MAX_HEIGHT", 1000)
         vision_min_confidence = _env_float("VISION_MIN_CONFIDENCE", 0.70)
         vision_click_test_enabled = _env_bool("VISION_CLICK_TEST_ENABLED", False)
+        agent_enabled = _env_bool("AGENT_ENABLED", True)
+        max_task_steps = _env_int("MAX_TASK_STEPS", 8)
+        max_step_retries = _env_int("MAX_STEP_RETRIES", 1)
+        max_task_duration_seconds = _env_int("MAX_TASK_DURATION_SECONDS", 60)
+        max_wait_seconds = _env_int("MAX_WAIT_SECONDS", 10)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -227,6 +238,18 @@ class Config:
         # Vision provider defaults to llm_provider if empty and vision enabled
         if vision_enabled and not vision_provider and llm_provider:
             vision_provider = llm_provider
+        if not 1 <= max_task_steps <= 20:
+            logger.warning("MAX_TASK_STEPS=%d out of range (1-20), clamping to 8.", max_task_steps)
+            max_task_steps = 8
+        if not 0 <= max_step_retries <= 5:
+            logger.warning("MAX_STEP_RETRIES=%d out of range (0-5), clamping to 1.", max_step_retries)
+            max_step_retries = 1
+        if not 10 <= max_task_duration_seconds <= 300:
+            logger.warning("MAX_TASK_DURATION_SECONDS=%d out of range (10-300), clamping to 60.", max_task_duration_seconds)
+            max_task_duration_seconds = 60
+        if not 1 <= max_wait_seconds <= 30:
+            logger.warning("MAX_WAIT_SECONDS=%d out of range (1-30), clamping to 10.", max_wait_seconds)
+            max_wait_seconds = 10
 
         config = cls(
             whisper_model=whisper_model,
@@ -267,9 +290,14 @@ class Config:
             screenshot_max_height=screenshot_max_height,
             vision_min_confidence=vision_min_confidence,
             vision_click_test_enabled=vision_click_test_enabled,
+            agent_enabled=agent_enabled,
+            max_task_steps=max_task_steps,
+            max_step_retries=max_step_retries,
+            max_task_duration_seconds=max_task_duration_seconds,
+            max_wait_seconds=max_wait_seconds,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -306,5 +334,10 @@ class Config:
             screenshot_max_height,
             vision_min_confidence,
             "yes" if vision_click_test_enabled else "no",
+            "enabled" if agent_enabled else "disabled",
+            max_task_steps,
+            max_step_retries,
+            max_task_duration_seconds,
+            max_wait_seconds,
         )
         return config

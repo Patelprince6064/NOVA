@@ -1,12 +1,12 @@
-"""Nova Voice Engine — Phase 7 screen understanding entry point.
+"""Nova Voice Engine — Phase 8 multi-step agent entry point.
 
 Flow hands-free:
-    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> BrowserController -> Vision -> AI Interpreter
+    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> BrowserController -> Vision -> AI Interpreter -> Agent
     -> LISTENING_FOR_WAKE_WORD --"Hey Nova"--> LISTENING_FOR_COMMAND
-    -> PROCESSING (Whisper) -> Fast vision/browser/pc -> LLM (validated) -> Vision/Browser/PC action -> SPEAKING -> back
+    -> PROCESSING (Whisper) -> Fast single? -> Agent planner (multi-step) -> Validated plan -> Executor (step verify, retry, timeout, cancel) -> SPEAKING -> back
 
-Vision: MSS on-demand screenshot only on visual commands, not for normal commands; resized with aspect, coordinates converted.
-Privacy: audio RAM only, screenshots in memory only, sent only when visual command triggered, not continuously.
+Agent: only allowlisted actions, max 8 steps, sequential verify, no code/shell, no unsafe, single action per step.
+Privacy: audio RAM only, screenshots on demand, vision only when needed, no continuous monitoring.
 """
 
 import argparse
@@ -49,6 +49,15 @@ try:
 except ImportError:
     ScreenAnalyzer = None  # type: ignore
     FindResult = None  # type: ignore
+try:
+    from app.agent.planner import TaskPlanner
+    from app.agent.executor import TaskExecutor, TaskState
+    from app.agent.validator import validate_plan
+except ImportError:
+    TaskPlanner = None  # type: ignore
+    TaskExecutor = None  # type: ignore
+    TaskState = None  # type: ignore
+    validate_plan = None  # type: ignore
 try:
     from app.ai.interpreter import CommandInterpreter
 except ImportError:
@@ -312,6 +321,50 @@ def route_pc_command(text: str, controller: PCController, interpreter, config, b
 
     # Fallback: return fast_resp for any other case (including empty)
     return fast_resp
+
+
+def is_multi_step_request(text: str) -> bool:
+    """Heuristic to detect multi-step requests for Phase 8 planner.
+
+    Simple: if contains connector and >=2 verbs, or multiple 'open', or commas.
+    Keeps simple commands like 'open Brave' fast path.
+    """
+    if not text or not text.strip():
+        return False
+    low = text.strip().lower()
+    # Cancellation phrases are not multi-step
+    if low in ("stop", "cancel", "never mind", "nevermind"):
+        return False
+    verbs = ["open", "launch", "start", "run", "go to", "search", "type", "press", "click", "scroll", "close", "find", "play", "write"]
+    verb_count = sum(1 for v in verbs if v in low)
+    has_connector = any(c in low for c in [" and ", " then ", ","])
+    if has_connector and verb_count >= 2:
+        return True
+    if low.count("open") >= 2:
+        return True
+    # Check for comma + verbs
+    if "," in low and verb_count >= 2:
+        return True
+    # Check for natural multi like "open Brave go to YouTube" without and
+    # Count action triggers
+    triggers = ["open ", "launch ", "search ", "type ", "press ", "click ", "scroll "]
+    trigger_count = sum(1 for t in triggers if t in low)
+    if trigger_count >= 2:
+        return True
+    return False
+
+
+def is_cancellation_request(text: str) -> bool:
+    low = text.strip().lower()
+    return low in ("stop", "cancel", "never mind", "nevermind", "stop task", "cancel task")
+
+
+def is_unsafe_request(text: str) -> bool:
+    low = text.strip().lower()
+    dangerous = ["delete", "format", "rm ", "shutdown", "kill ", "uninstall", "password", "bank", "purchase", "buy ", "payment",
+                 "install ", "send email", "send message", "share private", "credential", "account recovery", "captcha", "security settings",
+                 "log into", "log in", "sign in", "login", "read my emails", "read emails", "reply to", "attach a file", "send it"]
+    return any(pat in low for pat in dangerous)
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +698,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     llm_status = "ENABLED" if config.llm_enabled and config.llm_api_key else ("DISABLED (no key)" if config.llm_enabled else "DISABLED")
     browser_status = "ENABLED" if config.browser_enabled else "DISABLED"
     vision_status = "ENABLED" if config.vision_enabled else "DISABLED"
+    agent_status = "ENABLED" if config.agent_enabled else "DISABLED"
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
@@ -658,6 +712,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     print(f"🧠 Natural language: {llm_status} (provider={config.llm_provider} model={config.llm_model or 'default'})")
     print(f"🌐 Browser: {browser_status} ({config.browser_name} headless={config.browser_headless} timeout={config.browser_timeout_ms}ms)")
     print(f"👁️  Vision: {vision_status} (monitor={config.screen_monitor} max={config.screenshot_max_width}x{config.screenshot_max_height} conf>={config.vision_min_confidence})")
+    print(f"🤖 Agent: {agent_status} (steps={config.max_task_steps} duration={config.max_task_duration_seconds}s)")
     print(f"Sample Rate: {config.sample_rate} Hz")
     print(f"Mode: {mode}")
     print("\nStatus: READY")
@@ -673,14 +728,15 @@ def main() -> None:
     parser.add_argument("--help", action="store_true", help="Show help")
     args, _unknown = parser.parse_known_args()
     if args.help:
-        print("Nova Voice Engine — Phase 7")
-        print("  python -m app.main          # hands-free wake-word + vision (default)")
+        print("Nova Voice Engine — Phase 8")
+        print("  python -m app.main          # hands-free wake-word + multi-step agent (default)")
         print("  python -m app.main --manual # manual ENTER mode")
         print("  python -m app.main --help   # this help")
         print("")
-        print("Examples: 'what is on my screen?' | 'where is the YouTube search box?' | 'what app is open?'")
-        print("  'open YouTube' | 'search YouTube for Arijit Singh' | 'press Control C'")
-        print("Visual commands capture screenshot on demand only.")
+        print("Examples: 'open Brave and go to YouTube' | 'open YouTube and search for Arijit Singh'")
+        print("  'open Brave, go to YouTube, search for Arijit Singh, and play the first song' (multi-step)")
+        print("  'what is on my screen?' | 'where is the YouTube search box?' (vision)")
+        print("Simple 'open Brave' still fast path without planner.")
         sys.exit(0)
 
     logger.info("Nova Voice Engine starting...")
@@ -864,6 +920,26 @@ def main() -> None:
         print("Vision: Disabled (VISION_ENABLED=false)\n")
         logger.info("Vision disabled")
 
+    # ---- Initialize Agent planner/executor (Phase 8) ----
+    agent_planner = None
+    agent_executor = None
+    if config.agent_enabled:
+        if TaskPlanner is None or TaskExecutor is None:
+            print("WARNING: Agent enabled but agent module not available.\n")
+            logger.warning("Agent import failed")
+        else:
+            try:
+                agent_planner = TaskPlanner(config)
+                agent_executor = TaskExecutor(pc_controller, browser_controller, vision_analyzer, config)
+                print(f"Agent: Enabled (max_steps={config.max_task_steps} duration={config.max_task_duration_seconds}s wait={config.max_wait_seconds}s)\n")
+                logger.info("Agent initialized: steps=%d duration=%d", config.max_task_steps, config.max_task_duration_seconds)
+            except Exception as exc:
+                print(f"WARNING: Agent init failed: {exc}\n")
+                logger.warning("Agent init failed: %s", exc)
+    else:
+        print("Agent: Disabled (AGENT_ENABLED=false)\n")
+        logger.info("Agent disabled")
+
     print_banner(config, selected, speaker, mode_str)
 
     # -------------------------------------------------------------------
@@ -1036,13 +1112,79 @@ def main() -> None:
                         print(f'  "{text}"')
                         logger.info("Transcription: %r (hands-free)", text[:120])
 
-                    # ---- SPEAKING (Phase 6: browser/pc + LLM) ----
+                    # ---- SPEAKING (Phase 8: agent task or single) ----
                     state = WakeWordState.SPEAKING
-                    try:
-                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
-                    except Exception as exc:
-                        logger.exception("Route failed: %s", exc)
-                        response = "I couldn't process that command right now."
+                    # Check cancellation first (if task was running)
+                    if is_cancellation_request(text) and agent_executor and agent_executor.state == TaskState.RUNNING:
+                        agent_executor.cancel()
+                        response = "Task cancelled."
+                        logger.info("Cancellation requested during speaking state")
+                    elif is_multi_step_request(text) and config.agent_enabled and agent_planner and agent_executor:
+                        # Safety: unsafe multi-step rejected before planner
+                        if is_unsafe_request(text):
+                            response = "I can't perform that action yet."
+                            logger.warning("Unsafe multi-step rejected: %r", text[:120])
+                        else:
+                            # Multi-step task via planner
+                            try:
+                                plan = agent_planner.plan(text)
+                                if not plan or not plan.steps:
+                                    response = "I couldn't create a safe plan for that request."
+                                    logger.warning("Planner returned no plan")
+                                else:
+                                    ok, err = validate_plan(plan, config)
+                                    if not ok:
+                                        # Distinguish too complex vs unsafe
+                                        if "too complex" in err.lower():
+                                            response = err
+                                        elif "prohibited" in err.lower() or "unsafe" in err.lower():
+                                            response = "I can't perform that action yet."
+                                        else:
+                                            response = err
+                                        logger.warning("Plan validation failed: %s", err)
+                                    else:
+                                        # Voice start
+                                        if speaker.is_available:
+                                            try:
+                                                speaker.speak("Okay, I'll do that.")
+                                            except Exception:
+                                                pass
+                                        # Execute task
+                                        status = agent_executor.execute(plan)
+                                        if status.state == TaskState.COMPLETED:
+                                            response = "Done."
+                                        elif status.state == TaskState.CANCELLED:
+                                            response = "Task cancelled."
+                                        elif status.state == TaskState.FAILED:
+                                            err_msg = status.error or "I couldn't complete that task."
+                                            # Provide more detail if last step was find
+                                            if status.results and not status.results[-1].get("ok"):
+                                                last = status.results[-1].get("msg", "")
+                                                if "couldn't find" in last.lower():
+                                                    response = last
+                                                elif "too long" in err_msg.lower():
+                                                    response = "The task took too long, so I stopped."
+                                                else:
+                                                    response = err_msg
+                                            else:
+                                                response = err_msg
+                                            if "too long" in err_msg.lower():
+                                                response = "The task took too long, so I stopped."
+                                        else:
+                                            response = "I couldn't complete that task."
+                            except TimeoutError:
+                                response = "The task took too long, so I stopped."
+                                logger.warning("Task timeout")
+                            except Exception as exc:
+                                logger.exception("Agent task failed: %s", exc)
+                                response = "I couldn't create a safe plan for that request."
+                    else:
+                        # Single-step fallback
+                        try:
+                            response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
+                        except Exception as exc:
+                            logger.exception("Route failed: %s", exc)
+                            response = "I couldn't process that command right now."
                     if response:
                         print("\n🔊 Nova:\n")
                         print(f'  "{response}"')
@@ -1156,13 +1298,55 @@ def main() -> None:
                 else:
                     print("📝 You said:\n")
                     print(f'  "{text}"')
-                # Route via Phase 7 helper (vision + browser + pc fast + LLM)
+                # Route via Phase 8 (agent multi-step or single)
                 if text and text.strip():
-                    try:
-                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
-                    except Exception as exc:
-                        logger.exception("Route failed: %s", exc)
-                        response = "I couldn't process that command right now."
+                    if is_cancellation_request(text) and agent_executor and agent_executor.state == TaskState.RUNNING:
+                        agent_executor.cancel()
+                        response = "Task cancelled."
+                    elif is_multi_step_request(text) and config.agent_enabled and agent_planner and agent_executor:
+                        if is_unsafe_request(text):
+                            response = "I can't perform that action yet."
+                            logger.warning("Unsafe multi-step rejected: %r", text[:120])
+                        else:
+                            try:
+                                plan = agent_planner.plan(text)
+                                if not plan or not plan.steps:
+                                    response = "I couldn't create a safe plan for that request."
+                                else:
+                                    ok, err = validate_plan(plan, config)
+                                    if not ok:
+                                        if "too complex" in err.lower():
+                                            response = err
+                                        elif "prohibited" in err.lower() or "unsafe" in err.lower():
+                                            response = "I can't perform that action yet."
+                                        else:
+                                            response = err
+                                    else:
+                                        if speaker.is_available:
+                                            try:
+                                                speaker.speak("Okay, I'll do that.")
+                                            except Exception:
+                                                pass
+                                        status = agent_executor.execute(plan)
+                                        if status.state == TaskState.COMPLETED:
+                                            response = "Done."
+                                        elif status.state == TaskState.CANCELLED:
+                                            response = "Task cancelled."
+                                        elif status.state == TaskState.FAILED:
+                                            response = status.error or "I couldn't complete that task."
+                                            if "too long" in response.lower():
+                                                response = "The task took too long, so I stopped."
+                                        else:
+                                            response = "I couldn't complete that task."
+                            except Exception as exc:
+                                logger.exception("Agent task failed: %s", exc)
+                                response = "I couldn't create a safe plan for that request."
+                    else:
+                        try:
+                            response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
+                        except Exception as exc:
+                            logger.exception("Route failed: %s", exc)
+                            response = "I couldn't process that command right now."
                 else:
                     response = ""
                 if response:
