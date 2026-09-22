@@ -54,6 +54,7 @@ class WakeWordState(Enum):
     LISTENING_FOR_COMMAND = auto()
     PROCESSING = auto()
     SPEAKING = auto()
+    CANCELLING = auto()
 
 
 @dataclass

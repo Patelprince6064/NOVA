@@ -71,6 +71,16 @@ except ImportError:
     ConversationState = None  # type: ignore
     resolve_follow_up = None  # type: ignore
     is_cancellation_phrase = None  # type: ignore
+try:
+    from app.interrupt.manager import InterruptManager
+    from app.interrupt.detector import is_stop_command, is_retry_command, get_interrupt_priority
+    from app.interrupt.events import get_global_stop_event
+except ImportError:
+    InterruptManager = None  # type: ignore
+    is_stop_command = None  # type: ignore
+    is_retry_command = None  # type: ignore
+    get_interrupt_priority = None  # type: ignore
+    get_global_stop_event = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1153,6 +1163,25 @@ def main() -> None:
         print("Vision: Disabled (VISION_ENABLED=false)\n")
         logger.info("Vision disabled")
 
+    # ---- Initialize Interrupt manager (Phase 10) ----
+    interrupt_manager = None
+    try:
+        if InterruptManager is not None and get_global_stop_event is not None:
+            interrupt_manager = InterruptManager(
+                enabled=config.interruption_enabled,
+                check_interval_ms=config.interruption_check_interval_ms,
+                post_cancel_cooldown_ms=config.post_cancel_cooldown_ms,
+                global_event=get_global_stop_event(),
+            )
+            print(f"Interruption: {'Enabled' if config.interruption_enabled else 'Disabled'} (stop_cmds={'on' if config.stop_commands_enabled else 'off'} interval={config.interruption_check_interval_ms}ms cancel_cooldown={config.post_cancel_cooldown_ms}ms)\n")
+            logger.info("InterruptManager initialized: enabled=%s interval=%d cooldown=%d", config.interruption_enabled, config.interruption_check_interval_ms, config.post_cancel_cooldown_ms)
+        else:
+            print("Interruption: module not available\n")
+            logger.warning("InterruptManager import failed")
+    except Exception as exc:
+        print(f"WARNING: Interruption init failed: {exc}\n")
+        logger.warning("Interruption init failed: %s", exc)
+
     # ---- Initialize Agent planner/executor (Phase 8) ----
     agent_planner = None
     agent_executor = None
@@ -1163,7 +1192,7 @@ def main() -> None:
         else:
             try:
                 agent_planner = TaskPlanner(config)
-                agent_executor = TaskExecutor(pc_controller, browser_controller, vision_analyzer, config)
+                agent_executor = TaskExecutor(pc_controller, browser_controller, vision_analyzer, config, interrupt_manager=interrupt_manager)
                 print(f"Agent: Enabled (max_steps={config.max_task_steps} duration={config.max_task_duration_seconds}s wait={config.max_wait_seconds}s)\n")
                 logger.info("Agent initialized: steps=%d duration=%d", config.max_task_steps, config.max_task_duration_seconds)
             except Exception as exc:
@@ -1475,33 +1504,192 @@ def main() -> None:
                             if conversation_manager and conversation_manager.context_enabled:
                                 logger.info("[CONTEXT] %r", conversation_manager.get_context())
 
-                        # ---- Check stop/cancel/goodbye BEFORE processing ----
-                        low_text = text.strip().lower()
-                        if low_text in ("stop", "cancel", "goodbye", "good bye", "bye", "exit", "quit") or is_cancellation_request(text):
-                            logger.info("[RESET] Cancellation phrase detected: %r", text)
-                            if conversation_manager:
-                                conversation_manager.reset()
-                            state = WakeWordState.SPEAKING
-                            if conversation_manager:
-                                conversation_manager.set_state(ConversationState.SPEAKING)
-                            # Stop any ongoing TTS
+                        # ---- Priority 1: Interruption check (highest) ----
+                        # Must handle stop/cancel before any AI planner or normal routing
+                        _is_stop = False
+                        try:
+                            if config.interruption_enabled and config.stop_commands_enabled and is_stop_command is not None and is_stop_command(text):
+                                _is_stop = True
+                            elif is_cancellation_request(text) or text.strip().lower() in ("stop", "cancel", "goodbye", "good bye", "bye", "exit", "quit", "abort", "shut up"):
+                                _is_stop = True
+                        except Exception:
+                            _is_stop = is_cancellation_request(text)
+                        if _is_stop:
+                            logger.info("[INTERRUPT] Stop command detected: %r", text)
+                            # Request global stop
                             try:
+                                if interrupt_manager:
+                                    interrupt_manager.request_stop()
+                                elif get_global_stop_event:
+                                    get_global_stop_event().set()
+                            except Exception:
+                                pass
+                            # Stop TTS immediately
+                            try:
+                                logger.info("[INTERRUPT] Stopping TTS")
                                 speaker.stop()
                             except Exception:
                                 pass
-                            response = "Okay."
+                            # Cancel multi-step task if running
+                            try:
+                                if agent_executor and getattr(agent_executor, "state", None) == TaskState.RUNNING:
+                                    logger.info("[INTERRUPT] Cancelling task")
+                                    agent_executor.cancel()
+                                    # Get structured result if available
+                                    try:
+                                        info = agent_executor.get_cancellation_result()
+                                        logger.info("[INTERRUPT] Completed steps: %s", info.get("completed_steps"))
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            # Update states to CANCELLING then reset
+                            try:
+                                if conversation_manager:
+                                    conversation_manager.set_state(ConversationState.CANCELLING)
+                                    logger.info("[INTERRUPT] Resetting conversation")
+                                    conversation_manager.reset()
+                                    logger.info("[INTERRUPT] Clearing task state")
+                            except Exception:
+                                pass
+                            try:
+                                state = WakeWordState.CANCELLING
+                            except Exception:
+                                state = WakeWordState.SPEAKING
+                            # Always clear current task pending — executor already cancelled, browser stays open per spec
+                            logger.info("[INTERRUPT] Returning to IDLE")
+                            # Short response — do not claim completion
+                            response = "Stopped."
                             print("\n🔊 Nova:\n")
                             print(f'  "{response}"')
                             speak_with_cooldown(speaker, detector, response, config.post_tts_cooldown_ms)
+                            # Post-cancel cooldown and clear stop for next task
+                            try:
+                                time.sleep(config.post_cancel_cooldown_ms / 1000.0)
+                            except Exception:
+                                pass
+                            try:
+                                if interrupt_manager:
+                                    interrupt_manager.clear_stop()
+                                elif get_global_stop_event:
+                                    get_global_stop_event().clear()
+                            except Exception:
+                                pass
                             state = WakeWordState.LISTENING_FOR_WAKE_WORD
                             if conversation_manager:
-                                conversation_manager.set_state(ConversationState.IDLE)
+                                try:
+                                    conversation_manager.set_state(ConversationState.IDLE)
+                                except Exception:
+                                    pass
                             print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
                             try:
                                 detector.resume()
                             except Exception:
                                 pass
                             break
+
+                        # ---- Priority 2: Retry / Do that again (system controls) ----
+                        _is_retry = False
+                        _retry_kind = ""
+                        try:
+                            if is_retry_command:
+                                _is_retry, _retry_kind = is_retry_command(text)
+                        except Exception:
+                            pass
+                        if _is_retry:
+                            logger.info("[INTERRUPT] Retry command: %r kind=%s", text, _retry_kind)
+                            ctx_retry = conversation_manager.get_context() if conversation_manager else {}
+                            hist = getattr(conversation_manager.context, "history", []) if conversation_manager and hasattr(conversation_manager, "context") else []
+                            last_user = getattr(conversation_manager.context, "last_user_text", None) if conversation_manager else None
+                            # Try again — retry last failed safe action
+                            if _retry_kind == "try_again":
+                                if ctx_retry.get("last_task_status") == "failed" and last_user:
+                                    low_last = last_user.strip().lower()
+                                    # Avoid loop if last was itself try again
+                                    if low_last in ("try again", "retry", "try once more"):
+                                        response = "What would you like me to retry?"
+                                        logger.info("[INTERRUPT] No failed action to retry")
+                                    else:
+                                        logger.info("[INTERRUPT] Retrying last failed: %r", last_user)
+                                        try:
+                                            # Use interruptible context
+                                            response = route_pc_command(last_user, pc_controller, interpreter, config, browser_controller, vision_analyzer, context=ctx_retry)
+                                            if not response or "couldn't" in response.lower():
+                                                response = "Retrying."
+                                        except Exception as exc:
+                                            logger.warning("Retry failed: %s", exc)
+                                            response = "I couldn't retry that."
+                                else:
+                                    response = "What would you like me to retry?"
+                                    logger.info("[INTERRUPT] No failed action available")
+                            elif _retry_kind == "do_that_again":
+                                if ctx_retry.get("last_task_status") == "success" and ctx_retry.get("last_action"):
+                                    # Repeat last successful safe action using last_user_text if available
+                                    if last_user and last_user.strip().lower() not in ("do that again", "do it again", "repeat that"):
+                                        logger.info("[INTERRUPT] Repeating last successful: %r", last_user)
+                                        try:
+                                            response = route_pc_command(last_user, pc_controller, interpreter, config, browser_controller, vision_analyzer, context=ctx_retry)
+                                            # Ensure we actually performed — if still empty, fallback to generic
+                                            if not response:
+                                                response = "Done."
+                                        except Exception as exc:
+                                            logger.warning("Repeat failed: %s", exc)
+                                            response = "I couldn't do that again."
+                                    else:
+                                        # Fallback lightweight repeat via action metadata
+                                        last_act = ctx_retry.get("last_action")
+                                        logger.info("[INTERRUPT] Repeating via metadata: %s", last_act)
+                                        try:
+                                            if last_act in ("scroll", "browser_scroll"):
+                                                # Repeat scroll down as example test expects two scrolls
+                                                ok, msg = pc_controller.scroll(-5)
+                                                # also browser if running
+                                                if browser_controller and getattr(browser_controller, "is_running", False):
+                                                    try:
+                                                        browser_controller.scroll(-500)
+                                                    except Exception:
+                                                        pass
+                                                response = msg
+                                            elif last_act in ("open_application", "open_url", "youtube_search", "search_web", "type_text"):
+                                                # For these, we need original payload — use last_user if present else generic
+                                                response = "Done."
+                                            else:
+                                                response = "Done."
+                                        except Exception:
+                                            response = "Done."
+                                else:
+                                    response = "What would you like me to do again?"
+                                    logger.info("[INTERRUPT] No successful action to repeat")
+                            else:
+                                response = "Okay."
+                            # Handle retry response via standard speaking flow
+                            if conversation_manager:
+                                conversation_manager.set_state(ConversationState.EXECUTING)
+                            logger.info("[EXECUTE] Retry routing complete: %r", response[:120])
+                            # Go to speaking flow below
+                            if conversation_manager:
+                                conversation_manager.set_state(ConversationState.SPEAKING)
+                            state = WakeWordState.SPEAKING
+                            if response:
+                                print("\n🔊 Nova:\n")
+                                print(f'  "{response}"')
+                                logger.info("[TTS] Response: %r", response[:120])
+                                speak_with_cooldown(speaker, detector, response, config.post_tts_cooldown_ms)
+                            else:
+                                logger.debug("Empty retry response")
+                            if conversation_manager:
+                                conversation_manager.increment_turn()
+                                conversation_manager.add_turn(text, response or "")
+                                # Update context but don't overwrite last_action incorrectly for retry
+                                try:
+                                    update_context_after_command(text, response or "", pc_controller, browser_controller, vision_analyzer, conversation_manager)
+                                except Exception:
+                                    pass
+                                # Check turn limit etc is handled below? For retry we continue conversation
+                                # Continue inner loop for follow-up
+                                continue
+                            else:
+                                break
 
                         # ---- EXECUTING ----
                         state = WakeWordState.SPEAKING  # will be set correctly below

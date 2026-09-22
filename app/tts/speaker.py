@@ -5,6 +5,7 @@ No audio is sent to external services.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -75,6 +76,8 @@ class Speaker:
         self._engine = None
         self._available = False
         self._initialized = False
+        self._speak_lock = threading.Lock()
+        self._is_speaking = False
 
     # ------------------------------------------------------------------
     # Initialization — called once at startup
@@ -215,7 +218,7 @@ class Speaker:
     # Speak / Stop / Shutdown
     # ------------------------------------------------------------------
     def speak(self, text: str) -> bool:
-        """Speak text aloud. Returns True if spoken, False if skipped/failed."""
+        """Speak text aloud. Thread-safe, single speech active. Returns True if spoken."""
         if not text or not text.strip():
             logger.debug("speak() called with empty text — skipping.")
             return False
@@ -225,15 +228,27 @@ class Speaker:
             return False
 
         if not self.is_available:
-            # Try lazy init if not yet attempted
             if not self._initialized:
                 self.initialize()
             if not self.is_available:
                 logger.warning("TTS not available — cannot speak: %r", text[:60])
                 return False
 
+        # Ensure only one speech at a time
+        if not self._speak_lock.acquire(blocking=False):
+            logger.warning("[INTERRUPT] TTS busy — stopping previous then speaking")
+            try:
+                self.stop()
+            except Exception:
+                pass
+            # wait briefly for lock
+            if not self._speak_lock.acquire(timeout=1.0):
+                logger.warning("TTS speak lock timeout")
+                return False
+
         cleaned = text.strip()
         logger.info("TTS speaking: %r (%d chars)", cleaned[:80], len(cleaned))
+        self._is_speaking = True
         try:
             assert self._engine is not None
             self._engine.say(cleaned)
@@ -241,13 +256,11 @@ class Speaker:
             logger.info("TTS speech completed.")
             return True
         except RuntimeError as exc:
-            # runAndWait can raise RuntimeError if loop already running
             logger.warning("TTS runtime error (may already be speaking): %s", exc)
             try:
                 self._engine.stop()
             except Exception:
                 pass
-            # Retry once
             try:
                 self._engine.say(cleaned)
                 self._engine.runAndWait()
@@ -259,16 +272,28 @@ class Speaker:
         except Exception as exc:
             logger.error("TTS speak failed: %s", exc)
             return False
+        finally:
+            self._is_speaking = False
+            try:
+                self._speak_lock.release()
+            except Exception:
+                pass
 
     def stop(self) -> None:
-        """Stop current speech immediately."""
+        """Stop current speech immediately. Safe to call multiple times or when not speaking."""
         if self._engine is None:
+            logger.debug("[INTERRUPT] TTS stop called but engine is None — no-op")
             return
         try:
             self._engine.stop()
-            logger.info("TTS stopped.")
+            self._is_speaking = False
+            logger.info("[INTERRUPT] TTS stopped.")
         except Exception as exc:
             logger.warning("TTS stop failed: %s", exc)
+
+    @property
+    def is_speaking(self) -> bool:
+        return self._is_speaking
 
     def shutdown(self) -> None:
         """Cleanly release TTS resources."""

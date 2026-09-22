@@ -13,6 +13,7 @@ class ConversationState(Enum):
     PROCESSING = auto()
     EXECUTING = auto()
     SPEAKING = auto()
+    CANCELLING = auto()
     CONVERSATION_ACTIVE = auto()
 
     def __str__(self) -> str:

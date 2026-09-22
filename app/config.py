@@ -71,6 +71,12 @@ class Config:
     max_conversation_turns: int = 10
     conversation_context_enabled: bool = True
     post_tts_cooldown_ms: int = 300
+    # Interruption (Phase 10) — stop/cancel
+    interruption_enabled: bool = True
+    stop_commands_enabled: bool = True
+    interruption_check_interval_ms: int = 100
+    post_cancel_cooldown_ms: int = 300
+    interruption_listening_enabled: bool = True
 
     @classmethod
     def load(cls) -> "Config":
@@ -179,6 +185,11 @@ class Config:
         max_conversation_turns = _env_int("MAX_CONVERSATION_TURNS", 10)
         conversation_context_enabled = _env_bool("CONVERSATION_CONTEXT_ENABLED", True)
         post_tts_cooldown_ms = _env_int("POST_TTS_COOLDOWN_MS", 300)
+        interruption_enabled = _env_bool("INTERRUPTION_ENABLED", True)
+        stop_commands_enabled = _env_bool("STOP_COMMANDS_ENABLED", True)
+        interruption_check_interval_ms = _env_int("INTERRUPTION_CHECK_INTERVAL_MS", 100)
+        post_cancel_cooldown_ms = _env_int("POST_CANCEL_COOLDOWN_MS", 300)
+        interruption_listening_enabled = _env_bool("INTERRUPTION_LISTENING_ENABLED", True)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -275,6 +286,12 @@ class Config:
         if not 0 <= post_tts_cooldown_ms <= 2000:
             logger.warning("POST_TTS_COOLDOWN_MS=%d out of range (0-2000), clamping to 300.", post_tts_cooldown_ms)
             post_tts_cooldown_ms = 300
+        if not 20 <= interruption_check_interval_ms <= 500:
+            logger.warning("INTERRUPTION_CHECK_INTERVAL_MS=%d out of range (20-500), clamping to 100.", interruption_check_interval_ms)
+            interruption_check_interval_ms = 100
+        if not 0 <= post_cancel_cooldown_ms <= 2000:
+            logger.warning("POST_CANCEL_COOLDOWN_MS=%d out of range (0-2000), clamping to 300.", post_cancel_cooldown_ms)
+            post_cancel_cooldown_ms = 300
 
         config = cls(
             whisper_model=whisper_model,
@@ -326,9 +343,14 @@ class Config:
             max_conversation_turns=max_conversation_turns,
             conversation_context_enabled=conversation_context_enabled,
             post_tts_cooldown_ms=post_tts_cooldown_ms,
+            interruption_enabled=interruption_enabled,
+            stop_commands_enabled=stop_commands_enabled,
+            interruption_check_interval_ms=interruption_check_interval_ms,
+            post_cancel_cooldown_ms=post_cancel_cooldown_ms,
+            interruption_listening_enabled=interruption_listening_enabled,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d conv=%s timeout=%d follow=%d max_turns=%d ctx=%s cooldown=%d",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d conv=%s timeout=%d follow=%d max_turns=%d ctx=%s cooldown=%d interrupt=%s stop_cmds=%s interval=%d cancel_cooldown=%d intr_listen=%s",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -376,5 +398,10 @@ class Config:
             max_conversation_turns,
             "enabled" if conversation_context_enabled else "disabled",
             post_tts_cooldown_ms,
+            "enabled" if interruption_enabled else "disabled",
+            "enabled" if stop_commands_enabled else "disabled",
+            interruption_check_interval_ms,
+            post_cancel_cooldown_ms,
+            "enabled" if interruption_listening_enabled else "disabled",
         )
         return config
