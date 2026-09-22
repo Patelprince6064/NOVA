@@ -32,6 +32,10 @@ class Config:
     command_timeout_seconds: int = 8
     wake_sound_enabled: bool = True
     wake_word_cooldown_ms: int = 500
+    # PC control settings (Phase 4)
+    pc_control_enabled: bool = True
+    default_scroll_amount: int = 5
+    action_timeout_seconds: int = 10
 
     @classmethod
     def load(cls) -> "Config":
@@ -100,6 +104,9 @@ class Config:
         command_timeout_seconds = _env_int("COMMAND_TIMEOUT_SECONDS", 8)
         wake_sound_enabled = _env_bool("WAKE_SOUND_ENABLED", True)
         wake_word_cooldown_ms = _env_int("WAKE_WORD_COOLDOWN_MS", 500)
+        pc_control_enabled = _env_bool("PC_CONTROL_ENABLED", True)
+        default_scroll_amount = _env_int("DEFAULT_SCROLL_AMOUNT", 5)
+        action_timeout_seconds = _env_int("ACTION_TIMEOUT_SECONDS", 10)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -137,6 +144,12 @@ class Config:
         if not wake_word:
             logger.warning("WAKE_WORD empty — using default 'hey nova'")
             wake_word = "hey nova"
+        if not 1 <= default_scroll_amount <= 20:
+            logger.warning("DEFAULT_SCROLL_AMOUNT=%d out of range (1-20), clamping to 5.", default_scroll_amount)
+            default_scroll_amount = 5
+        if not 1 <= action_timeout_seconds <= 30:
+            logger.warning("ACTION_TIMEOUT_SECONDS=%d out of range (1-30), clamping to 10.", action_timeout_seconds)
+            action_timeout_seconds = 10
 
         config = cls(
             whisper_model=whisper_model,
@@ -155,9 +168,12 @@ class Config:
             command_timeout_seconds=command_timeout_seconds,
             wake_sound_enabled=wake_sound_enabled,
             wake_word_cooldown_ms=wake_word_cooldown_ms,
+            pc_control_enabled=pc_control_enabled,
+            default_scroll_amount=default_scroll_amount,
+            action_timeout_seconds=action_timeout_seconds,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -174,5 +190,8 @@ class Config:
             config.command_timeout_seconds,
             config.wake_word_cooldown_ms,
             "on" if config.wake_sound_enabled else "off",
+            "enabled" if pc_control_enabled else "disabled",
+            default_scroll_amount,
+            action_timeout_seconds,
         )
         return config

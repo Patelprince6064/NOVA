@@ -4,42 +4,44 @@ Hands-free PC voice assistant (Windows).
 
 ## Current Phase
 
-**Phase 3 — Hands-Free Wake Word**
+**Phase 4 — Hands-Free + Basic PC Control**
 
 ```
-  👂 Waiting for "Hey Nova"
-           ↓
-  🎤 Listening (auto, no ENTER)
-           ↓
-  📝 Speech-to-text (local faster-whisper, only after wake)
-           ↓
-  🔊 Voice response (local pyttsx3)
-           ↓
-  👂 Waiting again
+👂 "Hey Nova"  →  🎤 Listening  →  📝 STT (faster-whisper)
+      ↓
+🧠 Command routing (local, no LLM)
+      ↓
+🖥️  PC action (app / url / type / key / scroll / click)
+      ↓
+🔊 Voice response
+      ↓
+👂 Waiting again
 ```
 
-Fully hands-free, offline, privacy-focused. No cloud, no LLM.
+Offline, local, allowlisted. No cloud, no LLM, one action per utterance.
 
 ---
 
 ## Features
 
-### Phase 1
-- Microphone detection, push-to-talk recording (16 kHz mono), local STT via `faster-whisper`
+### Phase 1 — STT
+- Mic detection, 16 kHz mono recording, local `faster-whisper`
 
-### Phase 2
-- Local TTS via `pyttsx3` (SAPI5), configurable voice/rate/volume, simple responses
+### Phase 2 — TTS
+- `pyttsx3` SAPI5, configurable voice/rate/volume, `Speaker` reuse
 
-### Phase 3 (new)
-- Hands-free wake-word detection — say **"Hey Nova"** without touching keyboard
-- Local wake-word engine (Vosk with `vosk-model-small-en-us-0.15`, fallback dummy energy detector — no cloud)
-- State machine: `IDLE → LISTENING_FOR_WAKE_WORD → LISTENING_FOR_COMMAND → PROCESSING → SPEAKING → LISTENING_FOR_WAKE_WORD`
-- Audio Input Manager: single mic ownership, wake mode pauses during command/TTS
-- Wake sound beep (configurable `WAKE_SOUND_ENABLED`, short `winsound.Beep`)
-- Command timeout `COMMAND_TIMEOUT_SECONDS` (default 8s) + silence handling
-- False-activation threshold `WAKE_WORD_THRESHOLD` + cooldown `WAKE_WORD_COOLDOWN_MS` to avoid TTS echo
-- TTS echo prevention: detection paused during `SPEAKING`
-- Backward compatible manual mode: `python -m app.main --manual` (ENTER loop)
+### Phase 3 — Wake Word
+- `vosk` small model `hey nova` (dummy fallback), state machine, cooldown/TTS echo prevention, `--manual` fallback
+
+### Phase 4 — PC Control (new)
+- **Apps:** `open Notepad / Brave / Chrome / Calculator / VS Code / File Explorer / Edge / Firefox` (aliases, env path overrides `BRAVE_PATH` etc.)
+- **Websites:** `open YouTube / GitHub / Google / Gmail` etc. via `webbrowser`
+- **Type:** `type Hello World` — literally types, not interpreted
+- **Keys:** `press Enter / Escape / Tab / Space / Delete / Up / Down / Home / End / Page Up / Down` (+ F1-F12)
+- **Hotkeys:** allowlisted only `Ctrl+C/V/A/Z/S/X/Y/N/O/F/P/W`, `Ctrl+Shift+T/N`, `Alt+Tab/F4`, `Win+D/E/R/L`
+- **Mouse:** `click`, `double click`, `right click`, `scroll up/down`
+- **Router:** `app/pc/actions.py` normalizes voice, handles variations `open/launch/start/run/go to`, rejects multi-step (`I can handle one...`) and unknown (`I can't perform that action yet.`), never `os.system(user_text)`
+- **Safety:** blocklisted `delete/format/kill/password/send email` etc., disabled when `PC_CONTROL_ENABLED=false`, foreground window via `win32gui`
 
 ---
 
@@ -55,20 +57,11 @@ Fully hands-free, offline, privacy-focused. No cloud, no LLM.
 cd nova
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-# If blocked: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Wake-word model (for accurate "Hey Nova" phrase):
-- Auto-download on first run (40MB) or manually:
-```powershell
-pip install vosk
-# Download https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
-# Extract to nova/models/vosk-model-small-en-us-0.15
-# Verify: dir models\vosk-model-small-en-us-0.15\am\final.mdl exists
-```
-Without the model, Nova falls back to dummy energy detector (any loud speech triggers — less accurate but still hands-free).
+Vosk model auto-downloads (40MB) or manually extract to `models/vosk-model-small-en-us-0.15`.
 
 ---
 
@@ -81,86 +74,74 @@ notepad .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `WHISPER_MODEL` | `base` | `tiny`/`base`/`small`/`medium`/`large-v3` |
-| `WHISPER_DEVICE` | `cpu` | `cpu` or `cuda` |
-| `WHISPER_COMPUTE_TYPE` | `int8` | `int8`/`float16` |
-| `SAMPLE_RATE` | `16000` | Hz |
-| `MAX_RECORDING_SECONDS` | `15` | Manual mode auto-stop |
+| `WHISPER_MODEL` | `base` | `tiny`/`base`/`small`/`medium` |
+| `WHISPER_DEVICE` | `cpu` | `cpu`/`cuda` |
 | `TTS_ENABLED` | `true` | Enable TTS |
 | `TTS_RATE` | `175` | 50–400 |
 | `TTS_VOLUME` | `1.0` | 0.0–1.0 |
-| `TTS_VOICE` | _(default)_ | Voice ID substring |
-| `WAKE_WORD_ENABLED` | `true` | Enable hands-free |
-| `WAKE_WORD` | `hey nova` | Phrase (lowercase) |
-| `WAKE_WORD_THRESHOLD` | `0.5` | 0.0–1.0 sensitivity (Vosk: unused, dummy: energy) |
-| `COMMAND_TIMEOUT_SECONDS` | `8` | 1–30 s wait after wake |
-| `WAKE_SOUND_ENABLED` | `true` | Beep on wake |
-| `WAKE_WORD_COOLDOWN_MS` | `500` | 0–5000 ms ignore after trigger/TTS |
-
-List TTS voices:
-```powershell
-python -c "from app.tts.speaker import get_available_voices; [print(f'[{i}] {v.name} — {v.id}') for i,v in enumerate(get_available_voices())]"
-```
+| `WAKE_WORD_ENABLED` | `true` | Hands-free |
+| `WAKE_WORD` | `hey nova` | Phrase |
+| `WAKE_WORD_THRESHOLD` | `0.5` | Sensitivity |
+| `COMMAND_TIMEOUT_SECONDS` | `8` | s after wake |
+| `PC_CONTROL_ENABLED` | `true` | Enable PC control |
+| `DEFAULT_SCROLL_AMOUNT` | `5` | 1–20 |
+| `ACTION_TIMEOUT_SECONDS` | `10` | 1–30 |
+| `BRAVE_PATH` | _(PATH)_ | Optional `brave.exe` full path |
+| `CHROME_PATH` | _(PATH)_ | Optional `chrome.exe` |
+| `VSCODE_PATH` | _(PATH)_ | Optional `Code.exe` |
 
 ---
 
 ## Usage
 
-Hands-free (default):
+Hands-free:
 ```powershell
 python -m app.main
 # 👂 Waiting for "hey nova"...
-# Say: Hey Nova
-# 🎤 Listening... -> speak command -> Nova responds -> waiting again
-# Q + ENTER or Ctrl+C to quit
+# Say: Hey Nova → 🎤 Listening → "open Notepad" → 🖥️ Notepad opens → 🔊 "Opening Notepad."
 ```
 
-Manual (Phase 1/2 compat):
+Manual:
 ```powershell
 python -m app.main --manual
-# Press ENTER to record
 ```
 
-Startup shows:
+### Supported Commands (one per utterance)
+
 ```
-Wake-word backend: vosk (or dummy)
-👂 Waiting for "hey nova"...
+Open app:
+  open Notepad / open Brave / launch Chrome / start Calculator / run VS Code / open File Explorer
+
+Open website:
+  open YouTube / go to GitHub / open Google / launch Gmail
+
+Type:
+  type Hello World   → literally types
+
+Keys:
+  press Enter / press Escape / press Tab / press Space
+
+Hotkeys:
+  press Control C / press Control V / press Control A / press Control Z / press Alt Tab / press Windows D
+
+Mouse:
+  click / double click / right click / scroll up / scroll down
+
+Friendly:
+  hello → Hello! I'm Nova. / how are you → I'm doing great...
 ```
 
-On wake:
+Multi-step rejected:
 ```
-✨ Wake word detected: "hey nova"
-🔔
-🎤 LISTENING... Speak now
-📝 You said: "hello"
-🔊 Nova: "Hello! I'm Nova."
-👂 Waiting for "hey nova"...
+"open Brave, go to YouTube and play" → "I can handle one basic action at a time right now."
 ```
 
-Silence timeout:
+Unknown:
 ```
-🎤 Listening...
-⚠️ No command detected.
-👂 Waiting for "hey nova"...
+"do something complicated" → "I can't perform that action yet."
 ```
 
----
-
-## Microphone Permissions
-
-Settings → Privacy & security → Microphone → Enable access for desktop apps.
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| Wake never triggers | Install vosk & model, check mic volume, lower `WAKE_WORD_THRESHOLD`, speak clearly |
-| False activations | Increase `WAKE_WORD_THRESHOLD`, increase `WAKE_WORD_COOLDOWN_MS` |
-| TTS triggers itself | Fixed: detection paused during `SPEAKING` + cooldown; if echo still, increase cooldown to 1000 |
-| `vosk not installed` | `pip install vosk` — dummy fallback still works but less accurate |
-| `sounddevice` fail | python.org Python, not Store; check Device Manager |
+Dangerous blocked, no shell execution.
 
 ---
 
@@ -169,17 +150,15 @@ Settings → Privacy & security → Microphone → Enable access for desktop app
 ```
 nova/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py              # State machine, hands-free loop, manual fallback
-│   ├── config.py            # Whisper + TTS + Wake-word .env
-│   ├── speech/
-│   │   └── transcriber.py
-│   ├── tts/
-│   │   └── speaker.py
-│   └── wakeword/            # NEW Phase 3
+│   ├── main.py              # State machine, PC integration
+│   ├── config.py            # Whisper+TTS+Wake+PC .env
+│   ├── speech/transcriber.py
+│   ├── tts/speaker.py
+│   ├── wakeword/detector.py
+│   └── pc/                  # NEW Phase 4
 │       ├── __init__.py
-│       └── detector.py      # WakeWordDetector (vosk/dummy), pause/resume, mic ownership
-├── tests/__init__.py
+│       ├── controller.py    # PCController (allowlisted)
+│       └── actions.py       # handle_command router
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -187,19 +166,19 @@ nova/
 
 ---
 
-## Privacy
+## Privacy / Safety
 
-- Wake detection local (Vosk/dummy), Whisper only after wake, TTS local.
-- Audio in RAM only, released after transcribe. No recordings saved. No cloud. Logs don't contain speech.
+- STT/TTS/wake local, PC actions allowlisted, no `shell=True` with user text, audio in RAM only, no recordings, no cloud.
 
 ---
 
 ## Roadmap
 
-- [x] Phase 1 — STT
-- [x] Phase 2 — TTS
-- [x] Phase 3 — Hands-free wake word (current)
-- [ ] Phase 4 — LLM agent, PC control
+- [x] Phase 1 STT
+- [x] Phase 2 TTS
+- [x] Phase 3 Wake Word
+- [x] Phase 4 Basic PC Control (current)
+- [ ] Phase 5+ LLM, vision, multi-step agent
 
 ## License
 

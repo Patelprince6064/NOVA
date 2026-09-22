@@ -1,14 +1,14 @@
-"""Nova Voice Engine — Phase 3 hands-free wake-word entry point.
+"""Nova Voice Engine — Phase 4 hands-free + PC control entry point.
 
 Flow hands-free:
-    Config -> Mic -> Whisper -> TTS -> WakeWordDetector
+    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController
     -> LISTENING_FOR_WAKE_WORD --"Hey Nova"--> LISTENING_FOR_COMMAND
-    -> PROCESSING (Whisper) -> SPEAKING (TTS) -> back to wake word
+    -> PROCESSING (Whisper) -> PC action -> SPEAKING (TTS) -> back to wake word
 
 Flow manual (fallback):
-    Press ENTER to record -> Transcribe -> Respond -> Speak (Phase 2 compat)
+    Press ENTER to record -> Transcribe -> PC action -> Speak
 
-Privacy: audio in RAM only. Wake detection local (Vosk/dummy), Whisper only after wake.
+Privacy: audio in RAM only. Wake local, PC actions allowlisted, no shell injection.
 """
 
 import argparse
@@ -40,6 +40,8 @@ from app.config import Config
 from app.speech.transcriber import Transcriber
 from app.tts.speaker import Speaker
 from app.wakeword.detector import WakeWordDetector, WakeWordState
+from app.pc.controller import PCController
+from app.pc.actions import handle_command
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -397,6 +399,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
         else:
             tts_status = "UNAVAILABLE"
     wake_status = "DISABLED" if not config.wake_word_enabled else f"READY (\"{config.wake_word}\")"
+    pc_status = "ENABLED" if config.pc_control_enabled else "DISABLED"
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
@@ -406,6 +409,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     print(f"👂 Wake word: {wake_status}")
     if config.wake_word_enabled:
         print(f"   Threshold: {config.wake_word_threshold}  Cooldown: {config.wake_word_cooldown_ms}ms  Timeout: {config.command_timeout_seconds}s")
+    print(f"🖥️  PC control: {pc_status} (scroll={config.default_scroll_amount} timeout={config.action_timeout_seconds}s)")
     print(f"Sample Rate: {config.sample_rate} Hz")
     print(f"Mode: {mode}")
     print("\nStatus: READY")
@@ -421,10 +425,13 @@ def main() -> None:
     parser.add_argument("--help", action="store_true", help="Show help")
     args, _unknown = parser.parse_known_args()
     if args.help:
-        print("Nova Voice Engine — Phase 3")
-        print("  python -m app.main          # hands-free wake-word mode (default)")
+        print("Nova Voice Engine — Phase 4")
+        print("  python -m app.main          # hands-free wake-word + PC control (default)")
         print("  python -m app.main --manual # manual ENTER mode (Phase 1/2 compat)")
         print("  python -m app.main --help   # this help")
+        print("")
+        print("PC control examples: 'open Notepad', 'open YouTube', 'type Hello World',")
+        print("  'press Enter', 'press Control C', 'scroll down', 'click'")
         sys.exit(0)
 
     logger.info("Nova Voice Engine starting...")
@@ -493,6 +500,26 @@ def main() -> None:
         else:
             print("Text-to-speech: Disabled (TTS_ENABLED=false)\n")
             logger.info("TTS disabled by config.")
+
+    # ---- Initialize PC controller (Phase 4) ----
+    pc_controller = PCController(
+        enabled=config.pc_control_enabled,
+        default_scroll=config.default_scroll_amount,
+        action_timeout=config.action_timeout_seconds,
+    )
+    if config.pc_control_enabled:
+        print(f"PC control: Enabled (scroll={config.default_scroll_amount})\n")
+        # Log foreground window for diagnostics
+        try:
+            fg = pc_controller.get_foreground_window()
+            if fg:
+                logger.info("Foreground window at startup: %r", fg)
+                print(f"Current window: {fg}\n")
+        except Exception:
+            pass
+    else:
+        print("PC control: Disabled (PC_CONTROL_ENABLED=false)\n")
+        logger.info("PC control disabled by config.")
 
     print_banner(config, selected, speaker, mode_str)
 
@@ -666,9 +693,18 @@ def main() -> None:
                         print(f'  "{text}"')
                         logger.info("Transcription: %r (hands-free)", text[:120])
 
-                    # ---- SPEAKING ----
+                    # ---- SPEAKING (Phase 4: PC control routing) ----
                     state = WakeWordState.SPEAKING
-                    response = generate_response(text)
+                    # Route via PC controller if enabled, else legacy responses
+                    if config.pc_control_enabled:
+                        try:
+                            # handle_command executes PC action locally, no LLM
+                            _handled, response = handle_command(text, pc_controller)
+                        except Exception as exc:
+                            logger.exception("PC command handling failed: %s", exc)
+                            response = "I couldn't perform that action."
+                    else:
+                        response = generate_response(text)
                     if response:
                         print("\n🔊 Nova:\n")
                         print(f'  "{response}"')
@@ -782,7 +818,18 @@ def main() -> None:
                 else:
                     print("📝 You said:\n")
                     print(f'  "{text}"')
-                response = generate_response(text) if text and text.strip() else ""
+                # Route via PC control if enabled
+                if text and text.strip():
+                    if config.pc_control_enabled:
+                        try:
+                            _handled, response = handle_command(text, pc_controller)
+                        except Exception as exc:
+                            logger.exception("PC command handling failed: %s", exc)
+                            response = "I couldn't perform that action."
+                    else:
+                        response = generate_response(text)
+                else:
+                    response = ""
                 if response:
                     print("\n🔊 Nova:\n")
                     print(f'  "{response}"')
