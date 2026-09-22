@@ -20,6 +20,11 @@ class Config:
     sample_rate: int = 16000
     max_recording_seconds: int = 15
     language: str | None = None  # None = auto-detect
+    # TTS settings
+    tts_enabled: bool = True
+    tts_rate: int = 175
+    tts_volume: float = 1.0
+    tts_voice: str = ""
 
     @classmethod
     def load(cls) -> "Config":
@@ -51,11 +56,37 @@ class Config:
                 logger.warning("Invalid integer for %s=%r, using default %d", key, raw, default)
                 return default
 
+        def _env_float(key: str, default: float) -> float:
+            raw = os.getenv(key)
+            if raw is None or raw.strip() == "":
+                return default
+            try:
+                return float(raw.strip())
+            except ValueError:
+                logger.warning("Invalid float for %s=%r, using default %r", key, raw, default)
+                return default
+
+        def _env_bool(key: str, default: bool) -> bool:
+            raw = os.getenv(key)
+            if raw is None or raw.strip() == "":
+                return default
+            val = raw.strip().lower()
+            if val in ("1", "true", "yes", "on", "enabled"):
+                return True
+            if val in ("0", "false", "no", "off", "disabled"):
+                return False
+            logger.warning("Invalid boolean for %s=%r, using default %r", key, raw, default)
+            return default
+
         whisper_model = _env_str("WHISPER_MODEL", "base")
         whisper_device = _env_str("WHISPER_DEVICE", "cpu")
         whisper_compute_type = _env_str("WHISPER_COMPUTE_TYPE", "int8")
         sample_rate = _env_int("SAMPLE_RATE", 16000)
         max_recording_seconds = _env_int("MAX_RECORDING_SECONDS", 15)
+        tts_enabled = _env_bool("TTS_ENABLED", True)
+        tts_rate = _env_int("TTS_RATE", 175)
+        tts_volume = _env_float("TTS_VOLUME", 1.0)
+        tts_voice = _env_str("TTS_VOICE", "") if os.getenv("TTS_VOICE") and os.getenv("TTS_VOICE", "").strip() else ""
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -73,6 +104,14 @@ class Config:
             )
             max_recording_seconds = 15
 
+        # Clamp TTS volume/rate
+        if not 0.0 <= tts_volume <= 1.0:
+            logger.warning("TTS_VOLUME=%.2f out of range (0.0-1.0), clamping.", tts_volume)
+            tts_volume = max(0.0, min(1.0, tts_volume))
+        if not 50 <= tts_rate <= 400:
+            logger.warning("TTS_RATE=%d out of range (50-400), clamping.", tts_rate)
+            tts_rate = max(50, min(400, tts_rate))
+
         config = cls(
             whisper_model=whisper_model,
             whisper_device=whisper_device,
@@ -80,14 +119,22 @@ class Config:
             sample_rate=sample_rate,
             max_recording_seconds=max_recording_seconds,
             language=language,
+            tts_enabled=tts_enabled,
+            tts_rate=tts_rate,
+            tts_volume=tts_volume,
+            tts_voice=tts_voice,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
             config.sample_rate,
             config.max_recording_seconds,
             config.language or "auto",
+            "enabled" if config.tts_enabled else "disabled",
+            config.tts_rate,
+            config.tts_volume,
+            config.tts_voice or "default",
         )
         return config

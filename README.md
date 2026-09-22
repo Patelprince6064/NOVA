@@ -4,35 +4,47 @@ Hands-free PC voice assistant (Windows).
 
 ## Current Phase
 
-**Phase 1 — Voice Input + Speech-to-Text**
-
-This phase provides a reliable local voice-input pipeline:
+**Phase 2 — Voice Input + Speech-to-Text + Text-to-Speech**
 
 ```
-Microphone → Record speech → Speech-to-text → Display recognized text
+Microphone → Record → Speech-to-text → Response → Speak aloud
 ```
 
-No cloud services, no AI agent, no automation — just accurate local transcription.
+Offline, local, privacy-focused. No cloud services, no LLM.
 
 ---
 
-## Features (Phase 1)
+## Features
 
+### Phase 1
 - Microphone detection (lists all input devices, auto-selects default)
 - Push-to-talk voice recording (16 kHz, mono, float32)
 - Local speech-to-text via `faster-whisper`
 - Configurable Whisper model (`tiny` / `base` / `small` / ...)
 - Handles silence, empty speech, and microphone errors gracefully
-- Privacy-focused: audio stays in memory, never written to disk or sent externally
-- Lightweight logging (no audio or sensitive speech content logged)
+- Privacy-focused: audio stays in memory, never written to disk
+
+### Phase 2 (new)
+- Local text-to-speech via `pyttsx3` (SAPI5 on Windows, offline)
+- TTS engine initialized once and reused (low latency)
+- Configurable voice, speaking rate, and volume via `.env`
+- Voice listing utility
+- Simple local response system (no LLM):
+  - `hello` → `Hello! I'm Nova.`
+  - `hi` → `Hi! I'm ready.`
+  - `how are you` → `I'm doing great. I'm ready for your next command.`
+  - `test` → `Voice system is working correctly.`
+  - unknown → `I heard you say: ...`
+- Graceful TTS failure handling (STT keeps working)
+- Interruptible speech (`speaker.stop()`) and clean shutdown
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- Windows 10/11
-- A working microphone
+- Windows 10/11 (SAPI5 for TTS)
+- A working microphone + speakers/headphones
 - Internet connection on first run (to download the Whisper model)
 
 ---
@@ -40,22 +52,10 @@ No cloud services, no AI agent, no automation — just accurate local transcript
 ## Installation
 
 ```powershell
-# 1. Clone or create the project folder
 cd nova
-
-# 2. Create a virtual environment
 python -m venv .venv
-
-# 3. Activate it (Windows PowerShell)
 .venv\Scripts\Activate.ps1
-
-# If activation is blocked, run once as Administrator:
-# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-
-# Alternative — Command Prompt:
-# .venv\Scripts\activate.bat
-
-# 4. Install dependencies
+# If blocked: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
@@ -64,8 +64,6 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Copy the example env file and edit as needed:
-
 ```powershell
 copy .env.example .env
 notepad .env
@@ -73,34 +71,69 @@ notepad .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `WHISPER_MODEL` | `base` | Model size: `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `WHISPER_MODEL` | `base` | `tiny`, `base`, `small`, `medium`, `large-v3` |
 | `WHISPER_DEVICE` | `cpu` | `cpu` or `cuda` |
 | `WHISPER_COMPUTE_TYPE` | `int8` | `int8` (CPU), `float16` (CUDA) |
 | `SAMPLE_RATE` | `16000` | Audio sample rate (Hz) |
 | `MAX_RECORDING_SECONDS` | `15` | Auto-stop after this many seconds |
 | `WHISPER_LANGUAGE` | _(auto)_ | Force language e.g. `en` |
+| `TTS_ENABLED` | `true` | Enable/disable speech output |
+| `TTS_RATE` | `175` | Speaking rate (50–400) |
+| `TTS_VOLUME` | `1.0` | Volume 0.0–1.0 |
+| `TTS_VOICE` | _(default)_ | Voice ID substring; empty = system default |
 
-Smaller models (`tiny`, `base`) are faster and use less RAM; larger models are more accurate.
+List available voices:
+
+```powershell
+python -c "from app.tts.speaker import get_available_voices; [print(f'[{i}] {v.name} — {v.id}') for i,v in enumerate(get_available_voices())]"
+# or inside Python:
+# from app.tts.speaker import Speaker; Speaker().initialize(); Speaker().print_voices()
+```
+
+On Windows typical voices: `Microsoft David`, `Microsoft Zira`, `Microsoft Mark`.
 
 ---
 
 ## Usage
 
 ```powershell
-# From the nova/ folder with venv activated:
 python -m app.main
 ```
 
-### What you will see
+Expected startup:
 
 ```
+Nova Voice Engine
+-----------------
+
+Available microphones:
+  [0] Microphone (Realtek)
+  [1] Headset Microphone
+
+Selected microphone: [0] Microphone
+
+Loading speech recognition model...
+Speech recognition ready.
+
+Text-to-speech: Ready
+
+Available voices:
+  [0] Microsoft David - English (United States) (HKEY_LOCAL_MACHINE\...)
+  [1] Microsoft Zira - English (United States) (...)
+  [2] Microsoft Mark - English (United States) (...)
+
+Selected voice: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0
+
+Nova:
+"Voice system initialized."
+
 ================================
         NOVA VOICE ENGINE
 ================================
 
-Microphone: Default Microphone
-Model: base
-Sample Rate: 16000 Hz
+🎤 Microphone: Microphone — READY
+📝 Speech recognition: READY (model=base)
+🔊 Voice output: READY (rate=175 vol=1.0)
 
 Status: READY
 
@@ -108,43 +141,34 @@ Press ENTER to speak.
 Press Q + ENTER to quit.
 ```
 
-### Recording
-
-1. Press **ENTER** to start recording.
-2. Speak clearly.
-3. Press **ENTER** again to stop (or wait for the 15s auto-stop).
-4. Wait for transcription:
+Recording:
 
 ```
-📝 You said:
+🎤 LISTENING...
+Speak now.
 
-"Open Brave and search YouTube"
+📝 You said:
+"Hello Nova"
+
+🔊 Nova:
+"Hello! I'm Nova."
 
 Status: READY
 ```
 
-5. Repeat or press **Q + ENTER** to quit.
+If TTS fails:
+
+```
+WARNING:
+Text-to-speech is unavailable.
+Voice input will continue to work.
+```
 
 ---
 
 ## Microphone Permissions (Windows)
 
-If you see `Microphone permission denied`:
-
-1. Open **Settings → Privacy & security → Microphone**
-2. Enable **Microphone access**
-3. Enable **Let apps access your microphone**
-4. Enable **Let desktop apps access your microphone** (for Python)
-5. Restart Nova
-
-If no microphone is shown:
-
-```
-ERROR: No microphone detected.
-Please connect a microphone and restart Nova.
-```
-
-Check Device Manager → Audio inputs and outputs, and ensure your mic is not disabled.
+Settings → Privacy & security → Microphone → Enable *Microphone access* and *Let desktop apps access your microphone*.
 
 ---
 
@@ -152,11 +176,13 @@ Check Device Manager → Audio inputs and outputs, and ensure your mic is not di
 
 | Problem | Fix |
 |---|---|
-| `sounddevice` install fails | Install Python from python.org (not Windows Store) |
-| Model download slow | First run downloads ~150 MB for `base`; use `tiny` for faster download |
-| `WHISPER_DEVICE=cuda` fails | Install CUDA toolkit + cuDNN, or use `cpu` |
-| Poor accuracy | Try `WHISPER_MODEL=small`, speak closer to mic, reduce background noise |
-| `No speech detected` | Check mic volume in Windows Sound settings, speak louder |
+| `sounddevice` install fails | Use python.org Python, not Windows Store |
+| Model download slow | Use `WHISPER_MODEL=tiny` |
+| `WHISPER_DEVICE=cuda` fails | Install CUDA toolkit or use `cpu` |
+| TTS says `pyttsx3 not installed` | `pip install pyttsx3 comtypes` |
+| TTS voice not found | Leave `TTS_VOICE` empty or copy exact ID from voice list |
+| No speech detected | Check mic volume in Windows Sound settings |
+| TTS silent | Check speaker volume, try different `TTS_VOICE`, check `TTS_ENABLED` |
 
 ---
 
@@ -166,11 +192,14 @@ Check Device Manager → Audio inputs and outputs, and ensure your mic is not di
 nova/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # Entry point, mic detection, recording loop
-│   ├── config.py            # .env configuration
-│   └── speech/
+│   ├── main.py              # Mic detection, recording loop, responses, TTS integration
+│   ├── config.py            # .env configuration (Whisper + TTS)
+│   ├── speech/
+│   │   ├── __init__.py
+│   │   └── transcriber.py   # faster-whisper wrapper (load once)
+│   └── tts/
 │       ├── __init__.py
-│       └── transcriber.py   # faster-whisper wrapper (model loaded once)
+│       └── speaker.py       # pyttsx3 wrapper (init once, speak/stop/shutdown)
 ├── tests/
 │   └── __init__.py
 ├── .env.example
@@ -183,21 +212,23 @@ nova/
 
 ## Privacy
 
-- Audio is kept in RAM only for transcription and released immediately after.
-- No recordings are written to disk.
-- No audio is sent to external services — transcription is fully local via `faster-whisper`.
+- Audio kept in RAM only, released after transcription.
+- No recordings written to disk.
+- No audio sent to external services — STT and TTS are fully local.
+- No conversation history or database.
 - Logs do not contain speech content.
 
 ---
 
 ## Roadmap
 
-- [x] **Phase 1** — Voice input + speech-to-text (current)
-- [ ] Phase 2 — Wake word, agent, PC control
-- [ ] Phase 3 — Browser automation, natural language understanding
+- [x] **Phase 1** — Voice input + speech-to-text
+- [x] **Phase 2** — Text-to-speech + voice responses (current)
+- [ ] Phase 3 — Wake word, agent, PC control
+- [ ] Phase 4 — Browser automation & LLM
 
 ---
 
 ## License
 
-MIT (or your preferred license).
+MIT

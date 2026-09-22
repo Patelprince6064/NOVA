@@ -1,7 +1,8 @@
-"""Nova Voice Engine — Phase 1 entry point.
+"""Nova Voice Engine — Phase 1+2 entry point.
 
 Flow:
-    Load config -> Detect microphone -> Load Whisper model -> Push-to-talk loop.
+    Load config -> Detect microphone -> Load Whisper model -> Init TTS -> Push-to-talk loop
+    Record -> Transcribe -> Generate response -> Speak
 
 Privacy: audio stays in RAM, never written to disk.
 """
@@ -23,6 +24,7 @@ except ImportError:
 
 from app.config import Config
 from app.speech.transcriber import Transcriber
+from app.tts.speaker import Speaker
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -33,6 +35,30 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Simple Phase 2 response system (local, no LLM)
+# ---------------------------------------------------------------------------
+
+def generate_response(text: str) -> str:
+    """Map recognized text to a simple spoken response."""
+    if not text or not text.strip():
+        return ""
+    low = text.strip().lower()
+
+    # Priority: most specific first
+    if "how are you" in low:
+        return "I'm doing great. I'm ready for your next command."
+    if "hello" in low:
+        return "Hello! I'm Nova."
+    # 'hi' as standalone word — avoid matching inside other words too greedily
+    # but keep it simple: check for hi variants
+    if low == "hi" or low.startswith("hi ") or low.startswith("hi,") or " hi " in f" {low} " or low.endswith(" hi"):
+        return "Hi! I'm ready."
+    if "test" in low:
+        return "Voice system is working correctly."
+    return f"I heard you say: {text.strip()}"
+
 
 # ---------------------------------------------------------------------------
 # Microphone helpers
@@ -59,7 +85,6 @@ def list_microphones() -> List[MicInfo]:
 
     mics: List[MicInfo] = []
     for idx, dev in enumerate(devices):
-        # dev is a dict-like object
         try:
             if dev.get("max_input_channels", 0) > 0:
                 mics.append(
@@ -79,7 +104,6 @@ def select_microphone(mics: List[MicInfo]) -> Optional[MicInfo]:
     """Select microphone: auto-select if only one, otherwise pick default."""
     if not mics:
         return None
-    # Prefer the default input device if we can identify it
     if sd is not None:
         try:
             default_input = sd.default.device[0]  # (input, output)
@@ -88,7 +112,6 @@ def select_microphone(mics: List[MicInfo]) -> Optional[MicInfo]:
                     return m
         except Exception:
             pass
-    # Fallback: first device
     return mics[0]
 
 
@@ -117,14 +140,7 @@ def record_until_enter(
     sample_rate: int,
     max_seconds: int,
 ) -> Optional[np.ndarray]:
-    """Record mono float32 audio until user presses ENTER or max duration.
-
-    Uses a background InputStream that fills a queue; the main thread waits
-    for ENTER in a blocking input() call while a timer enforces max duration.
-
-    Returns:
-        1-D float32 numpy array, or None if recording failed/cancelled.
-    """
+    """Record mono float32 audio until user presses ENTER or max duration."""
     if sd is None:
         print("ERROR: sounddevice is not installed. Run: pip install -r requirements.txt")
         return None
@@ -138,10 +154,8 @@ def record_until_enter(
             logger.warning("Audio callback status: %s", status)
         if stop_event.is_set():
             return
-        # indata shape: (frames, channels) -> take first channel for mono
         audio_queue.put(indata[:, 0].copy())
 
-    # Start stream
     try:
         stream = sd.InputStream(
             device=device_index,
@@ -170,7 +184,6 @@ def record_until_enter(
     print(f"(Recording up to {max_seconds}s — press ENTER to stop)\n")
     logger.info("Recording started on device %d sr=%d", device_index, sample_rate)
 
-    # Auto-stop timer
     def auto_stop():
         if not stop_event.is_set():
             print(f"\n⏱  Maximum duration ({max_seconds}s) reached — stopping.")
@@ -179,9 +192,8 @@ def record_until_enter(
     timer = threading.Timer(max_seconds, auto_stop)
     timer.start()
 
-    # Wait for ENTER (blocking). User presses ENTER to stop.
     try:
-        input()  # second ENTER
+        input()
         if not stop_event.is_set():
             stop_event.set()
     except (KeyboardInterrupt, EOFError):
@@ -189,7 +201,6 @@ def record_until_enter(
         error_holder.append("interrupted")
     finally:
         timer.cancel()
-        # Give callback a moment to finish
         time.sleep(0.15)
         try:
             stream.stop()
@@ -202,7 +213,6 @@ def record_until_enter(
         logger.info("Recording interrupted by user.")
         return None
 
-    # Drain queue
     chunks: List[np.ndarray] = []
     while not audio_queue.empty():
         try:
@@ -226,15 +236,30 @@ def record_until_enter(
 # Banner helpers
 # ---------------------------------------------------------------------------
 
-def print_banner(config: Config, selected: Optional[MicInfo]) -> None:
+def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[Speaker] = None) -> None:
     mic_name = selected.name if selected else "None"
+    tts_status = "DISABLED"
+    if speaker is not None:
+        if speaker.is_available:
+            tts_status = "READY"
+        elif not speaker.is_enabled:
+            tts_status = "DISABLED"
+        else:
+            tts_status = "UNAVAILABLE"
+
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
-    print(f"\nMicrophone: {mic_name}")
-    print(f"Model: {config.whisper_model}")
+    print(f"\n🎤 Microphone: {mic_name} — READY")
+    print(f"📝 Speech recognition: READY (model={config.whisper_model})")
+    print(f"🔊 Voice output: {tts_status} (rate={config.tts_rate} vol={config.tts_volume})")
     print(f"Sample Rate: {config.sample_rate} Hz")
-    print(f"Max Recording: {config.max_recording_seconds}s")
+    if speaker and speaker.is_available:
+        try:
+            vid = speaker._engine.getProperty("voice") if speaker._engine else ""
+            print(f"TTS Voice: {vid}")
+        except Exception:
+            pass
     print("\nStatus: READY")
     print("\nPress ENTER to speak.")
     print("Press Q + ENTER to quit.")
@@ -247,14 +272,11 @@ def print_banner(config: Config, selected: Optional[MicInfo]) -> None:
 def main() -> None:
     logger.info("Nova Voice Engine starting...")
 
-    # ---- Config ----
     config = Config.load()
 
-    # ---- Check sounddevice ----
     if sd is None:
         print("ERROR: Required package 'sounddevice' is not installed.")
         print("Install dependencies: pip install -r requirements.txt")
-        print("On Windows you may also need to install audio drivers.")
         sys.exit(1)
 
     # ---- Microphone detection ----
@@ -270,7 +292,7 @@ def main() -> None:
 
     logger.info("Microphone selected: [%d] %s", selected.index, selected.name)
 
-    # ---- Load model once ----
+    # ---- Load Whisper model once ----
     transcriber = Transcriber(
         model_name=config.whisper_model,
         device=config.whisper_device,
@@ -288,87 +310,140 @@ def main() -> None:
         logger.exception("Unexpected model load error")
         sys.exit(1)
 
-    # ---- Main loop ----
-    print_banner(config, selected)
+    # ---- Initialize TTS (once, non-fatal) ----
+    speaker = Speaker(
+        enabled=config.tts_enabled,
+        rate=config.tts_rate,
+        volume=config.tts_volume,
+        voice=config.tts_voice,
+    )
+    tts_ok = speaker.initialize()
 
-    while True:
-        print("\n" + "-" * 32)
+    if tts_ok:
+        print("Text-to-speech: Ready\n")
+        # List voices for diagnostics (INFO level also logged)
         try:
-            user_input = input("\nPress ENTER to start recording (Q to quit): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting Nova. Goodbye!")
-            break
-
-        if user_input.lower() == "q":
-            print("\nExiting Nova. Goodbye!")
-            logger.info("User requested quit.")
-            break
-
-        # Any other input (including empty ENTER) starts recording
-        if user_input != "" and user_input.lower() != "":
-            # If user typed something else, treat 'q' already handled, otherwise
-            # start recording anyway — be permissive for Phase 1.
+            speaker.print_voices()
+        except Exception:
             pass
-
-        print("\nPress ENTER again to stop recording.")
-        audio = record_until_enter(
-            device_index=selected.index,
-            sample_rate=config.sample_rate,
-            max_seconds=config.max_recording_seconds,
-        )
-
-        if audio is None:
-            # Interrupted or device error — return to ready state
-            print("\nStatus: READY")
-            continue
-
-        if audio.size == 0:
-            print("\n⚠️  No speech detected. Try again.")
-            print("\nStatus: READY")
-            continue
-
-        # Silence check before transcription
-        rms = float(np.sqrt(np.mean(audio**2))) if audio.size > 0 else 0.0
-        duration = audio.size / config.sample_rate
-        if duration < 0.3:
-            print("\n⚠️  Recording too short. Try speaking a bit longer.")
-            print("\nStatus: READY")
-            continue
-        if rms < 0.003:
-            print("\n⚠️  No speech detected (silence). Try again.")
-            logger.info("Silence detected (rms=%.5f) — skipping transcription.", rms)
-            print("\nStatus: READY")
-            continue
-
-        # Transcribe
-        print("\nTranscribing...\n")
-        logger.info("Starting transcription...")
+        print('Nova:\n"Voice system initialized."\n')
+        logger.info("Speaking startup phrase.")
         try:
-            text = transcriber.transcribe(audio, sample_rate=config.sample_rate)
-        except RuntimeError as exc:
-            print(f"\n❌ Unable to transcribe audio.\nPlease try again.\nDetails: {exc}")
-            logger.error("Transcription failed: %s", exc)
-            print("\nStatus: READY")
-            continue
+            speaker.speak("Voice system initialized.")
         except Exception as exc:
-            print(f"\n❌ Unexpected transcription error: {exc}\nPlease try again.")
-            logger.exception("Unexpected transcription error")
-            print("\nStatus: READY")
-            continue
-        finally:
-            # Privacy: release audio buffer immediately
-            del audio
-
-        if not text or not text.strip():
-            print("⚠️  No speech detected. Try again.")
+            logger.warning("Startup TTS speak failed: %s", exc)
+    else:
+        if config.tts_enabled:
+            print("WARNING:\nText-to-speech is unavailable.")
+            print("Voice input will continue to work.\n")
+            logger.warning("TTS unavailable — continuing with STT only.")
         else:
-            print("📝 You said:\n")
-            print(f'  "{text}"')
+            print("Text-to-speech: Disabled (TTS_ENABLED=false)\n")
+            logger.info("TTS disabled by config.")
 
-        print("\nStatus: READY")
+    # ---- Main loop ----
+    print_banner(config, selected, speaker)
 
-    logger.info("Nova Voice Engine stopped.")
-    print("\nNova stopped.")
+    try:
+        while True:
+            print("\n" + "-" * 32)
+            try:
+                user_input = input("\nPress ENTER to start recording (Q to quit): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting Nova. Goodbye!")
+                break
+
+            if user_input.lower() == "q":
+                print("\nExiting Nova. Goodbye!")
+                logger.info("User requested quit.")
+                break
+
+            print("\nPress ENTER again to stop recording.")
+            audio = record_until_enter(
+                device_index=selected.index,
+                sample_rate=config.sample_rate,
+                max_seconds=config.max_recording_seconds,
+            )
+
+            if audio is None:
+                print("\nStatus: READY")
+                continue
+
+            if audio.size == 0:
+                print("\n⚠️  No speech detected. Try again.")
+                print("\nStatus: READY")
+                continue
+
+            rms = float(np.sqrt(np.mean(audio**2))) if audio.size > 0 else 0.0
+            duration = audio.size / config.sample_rate
+            if duration < 0.3:
+                print("\n⚠️  Recording too short. Try speaking a bit longer.")
+                print("\nStatus: READY")
+                del audio
+                continue
+            if rms < 0.003:
+                print("\n⚠️  No speech detected (silence). Try again.")
+                logger.info("Silence detected (rms=%.5f) — skipping transcription.", rms)
+                print("\nStatus: READY")
+                del audio
+                continue
+
+            print("\nTranscribing...\n")
+            logger.info("Starting transcription...")
+            try:
+                text = transcriber.transcribe(audio, sample_rate=config.sample_rate)
+            except RuntimeError as exc:
+                print(f"\n❌ Unable to transcribe audio.\nPlease try again.\nDetails: {exc}")
+                logger.error("Transcription failed: %s", exc)
+                print("\nStatus: READY")
+                continue
+            except Exception as exc:
+                print(f"\n❌ Unexpected transcription error: {exc}\nPlease try again.")
+                logger.exception("Unexpected transcription error")
+                print("\nStatus: READY")
+                continue
+            finally:
+                del audio
+
+            if not text or not text.strip():
+                print("⚠️  No speech detected. Try again.")
+                print("\nStatus: READY")
+                continue
+            else:
+                print("📝 You said:\n")
+                print(f'  "{text}"')
+
+            # ---- Phase 2: generate & speak response ----
+            response = generate_response(text)
+            if response:
+                print("\n🔊 Nova:\n")
+                print(f'  "{response}"')
+                logger.info("Generated response: %r", response[:120])
+                if speaker.is_available:
+                    # Time the TTS for performance awareness
+                    t0 = time.perf_counter()
+                    ok = speaker.speak(response)
+                    dt = time.perf_counter() - t0
+                    logger.info("TTS speak %s in %.2fs", "ok" if ok else "failed", dt)
+                    if not ok:
+                        print("(TTS failed — response shown above)")
+                else:
+                    logger.debug("TTS not available — response shown only.")
+            else:
+                logger.debug("Empty response — not speaking.")
+
+            print("\nStatus: READY")
+    finally:
+        # ---- Clean shutdown ----
+        logger.info("Shutting down Nova...")
+        if 'speaker' in locals() and speaker is not None:
+            try:
+                speaker.stop()
+                speaker.shutdown()
+            except Exception as exc:
+                logger.warning("Error during TTS shutdown: %s", exc)
+        logger.info("Nova Voice Engine stopped.")
+        print("\nNova stopped.")
 
 
 if __name__ == "__main__":
