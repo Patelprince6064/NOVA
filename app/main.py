@@ -62,6 +62,15 @@ try:
     from app.ai.interpreter import CommandInterpreter
 except ImportError:
     CommandInterpreter = None  # type: ignore
+try:
+    from app.conversation.manager import ConversationManager
+    from app.conversation.state import ConversationState
+    from app.conversation.router import resolve_follow_up, is_cancellation_phrase
+except ImportError:
+    ConversationManager = None  # type: ignore
+    ConversationState = None  # type: ignore
+    resolve_follow_up = None  # type: ignore
+    is_cancellation_phrase = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -156,12 +165,12 @@ def _handle_vision_local(text: str, vision_analyzer, pc_controller, config) -> t
     return False, ""
 
 
-def route_pc_command(text: str, controller: PCController, interpreter, config, browser_controller=None, vision_analyzer=None) -> str:
+def route_pc_command(text: str, controller: PCController, interpreter, config, browser_controller=None, vision_analyzer=None, context: Optional[dict] = None) -> str:
     """Route via fast local router (vision + browser + PC), fallback to LLM if needed.
 
     Architecture:
-        text -> vision fast (on-demand screenshot) -> browser fast -> pc fast -> if known -> done
-        else if LLM enabled & available -> interpreter -> validate -> execute via appropriate controller (vision/browser/pc) -> response
+        text -> context follow-up router (pronoun resolution, fast local) -> vision fast (on-demand screenshot) -> browser fast -> pc fast -> if known -> done
+        else if LLM enabled & available -> interpreter (with context) -> validate -> execute via appropriate controller (vision/browser/pc) -> response
         else -> original unknown response
 
     Screenshots only on vision path. Normal commands do NOT capture.
@@ -170,6 +179,85 @@ def route_pc_command(text: str, controller: PCController, interpreter, config, b
     """
     if not text or not text.strip():
         return ""
+    # Phase 9: Lightweight follow-up router — handle pronoun / fast phrases without LLM
+    if context is not None and resolve_follow_up is not None:
+        try:
+            action, clarification = resolve_follow_up(text, context)
+            if clarification:
+                logger.info("[ROUTER] Clarification: %r", clarification)
+                return clarification
+            if action is not None:
+                logger.info("[ROUTER] Local command -> %r", action)
+                act = action.get("action", "")
+                # Fast scroll
+                if act == "scroll_fast":
+                    amt = action.get("amount", 500)
+                    # Browser scroll uses large amount, pc uses small; try browser first
+                    if browser_controller and getattr(browser_controller, "is_running", False):
+                        try:
+                            ok, msg = browser_controller.scroll(int(amt))
+                            return msg
+                        except Exception:
+                            pass
+                    # Fallback to pc scroll
+                    pc_amt = 5 if amt > 0 else -5
+                    try:
+                        ok, msg = controller.scroll(int(pc_amt))
+                        return msg
+                    except Exception as exc:
+                        logger.warning("Scroll fast failed: %s", exc)
+                        return "I couldn't scroll."
+                if act in ("browser_back", "browser_forward", "browser_refresh"):
+                    try:
+                        if act == "browser_back":
+                            ok, msg = browser_controller.go_back() if browser_controller else (False, "Browser is not running.")
+                        elif act == "browser_forward":
+                            ok, msg = browser_controller.go_forward() if browser_controller else (False, "Browser is not running.")
+                        else:
+                            ok, msg = browser_controller.refresh() if browser_controller else (False, "Browser is not running.")
+                        return msg
+                    except Exception as exc:
+                        logger.warning("Browser nav failed: %s", exc)
+                        return "I couldn't do that."
+                if act == "click_screen_element":
+                    # Context-aware click first result — try vision then browser fallback
+                    target = action.get("target", "first video result")
+                    if vision_analyzer is not None:
+                        try:
+                            win = controller.get_foreground_window() if controller else None
+                            result = vision_analyzer.find_element(target, active_window=win)
+                            if result.found and result.confidence >= getattr(config, "vision_min_confidence", 0.70):
+                                try:
+                                    import pyautogui
+                                    pyautogui.FAILSAFE = False
+                                    cx, cy = result.x + result.width // 2, result.y + result.height // 2
+                                    pyautogui.moveTo(cx, cy, duration=0.2)
+                                    pyautogui.click()
+                                    return "Playing the first result."
+                                except Exception as exc:
+                                    logger.warning("Click via vision failed: %s", exc)
+                                    return "I couldn't click that."
+                            elif result.found:
+                                return "I'm not confident enough to identify that."
+                            else:
+                                return "I couldn't find that on the screen."
+                        except Exception as exc:
+                            logger.warning("Vision find for click failed: %s", exc)
+                            return "I couldn't find that."
+                    # No vision: return graceful message that will be used as fallback
+                    return "I couldn't find that on the screen."
+                if act == "close_it":
+                    if browser_controller and getattr(browser_controller, "is_running", False):
+                        try:
+                            ok, msg = browser_controller.close_browser()
+                            return msg
+                        except Exception:
+                            pass
+                    return "What would you like me to close?"
+                if act == "repeat_last":
+                    return "Okay, repeating that."
+        except Exception as exc:
+            logger.exception("Follow-up router error: %s", exc)
     # Vision fast local (on-demand screenshot) — before browser/pc to avoid misrouting visual questions
     if config.vision_enabled and vision_analyzer is not None:
         try:
@@ -228,9 +316,9 @@ def route_pc_command(text: str, controller: PCController, interpreter, config, b
     # If fast_resp is "I can't perform..." -> unknown/ambiguous, try LLM
     if fast_resp == "I can't perform that action yet.":
         if interpreter is not None and interpreter.is_available():
-            logger.info("Fast path unknown -> trying LLM interpreter")
+            logger.info("[AI] Fast path unknown -> trying LLM interpreter")
             try:
-                validated, err = interpreter.interpret(text)
+                validated, err = interpreter.interpret(text, context)
                 if validated is not None:
                     # Dispatch validated action to appropriate controller
                     # validated already includes unsupported/clarification meta
@@ -365,6 +453,149 @@ def is_unsafe_request(text: str) -> bool:
                  "install ", "send email", "send message", "share private", "credential", "account recovery", "captcha", "security settings",
                  "log into", "log in", "sign in", "login", "read my emails", "read emails", "reply to", "attach a file", "send it"]
     return any(pat in low for pat in dangerous)
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Conversation helpers
+# ---------------------------------------------------------------------------
+
+def is_goodbye_phrase(text: str) -> bool:
+    low = text.strip().lower()
+    return low in ("goodbye", "good bye", "bye", "exit", "quit", "see you")
+
+
+def update_context_after_command(text: str, response: str, controller, browser_controller, vision_analyzer, conversation_manager) -> None:
+    """Update conversation context from last command (in-memory only). Never stores sensitive data."""
+    if not conversation_manager or not conversation_manager.context_enabled:
+        return
+    low = text.strip().lower()
+    ctx_updates = {}
+    # Detect application opened
+    for alias in ["brave", "chrome", "notepad", "calculator", "vscode", "explorer", "edge", "firefox"]:
+        if f"open {alias}" in low or f"launch {alias}" in low or f"start {alias}" in low:
+            ctx_updates["last_application"] = alias
+            ctx_updates["last_action"] = "open_application"
+            break
+    # Detect website navigation
+    if "youtube" in low and ("open" in low or "go to" in low or "launch" in low):
+        ctx_updates["current_site"] = "youtube"
+        ctx_updates["last_action"] = "open_url"
+        if browser_controller and getattr(browser_controller, "current_url", None):
+            ctx_updates["current_url"] = browser_controller.current_url
+    elif "google" in low and ("open" in low or "go to" in low or "search" in low):
+        if "search" not in low:
+            ctx_updates["current_site"] = "google"
+            ctx_updates["last_action"] = "open_url"
+    # Detect searches
+    if "search youtube for" in low:
+        m = re.search(r"search youtube for (.+)", low)
+        if m:
+            q = m.group(1).strip().split(" and ")[0].strip()[:100]
+            ctx_updates["last_search"] = q
+            ctx_updates["last_action"] = "youtube_search"
+            ctx_updates["current_site"] = "youtube"
+    elif "search google for" in low:
+        m = re.search(r"search google for (.+)", low)
+        if m:
+            q = m.group(1).strip()[:100]
+            ctx_updates["last_search"] = q
+            ctx_updates["last_action"] = "search_web"
+            ctx_updates["current_site"] = "google"
+    elif low.startswith("search ") and "youtube" not in low:
+        # Generic search e.g., "search Arijit Singh" after going to youtube -> treat as youtube_search if youtube site
+        cur_site = conversation_manager.get_context().get("current_site") if conversation_manager else None
+        if cur_site == "youtube":
+            q = low[len("search "):].strip()[:100]
+            if q:
+                ctx_updates["last_search"] = q
+                ctx_updates["last_action"] = "youtube_search"
+        else:
+            q = low[len("search "):].strip()[:100]
+            if q and len(q) > 1:
+                ctx_updates["last_search"] = q
+                ctx_updates["last_action"] = "search_web"
+    elif "search for" in low:
+        m = re.search(r"search for (.+)", low)
+        if m:
+            q = m.group(1).strip()[:100]
+            ctx_updates["last_search"] = q
+            # infer site
+            if "youtube" in low or (conversation_manager and conversation_manager.get_context().get("current_site") == "youtube"):
+                ctx_updates["last_action"] = "youtube_search"
+            else:
+                ctx_updates["last_action"] = "search_web"
+    # Play first result
+    if "play" in low and ("first" in low or "second" in low):
+        ctx_updates["last_action"] = "click_screen_element"
+    if "type " in low:
+        ctx_updates["last_action"] = "type_text"
+    if "scroll" in low:
+        ctx_updates["last_action"] = "scroll"
+    if "go back" in low or low == "back":
+        ctx_updates["last_action"] = "browser_back"
+    if "go forward" in low or low == "forward":
+        ctx_updates["last_action"] = "browser_forward"
+    if "refresh" in low:
+        ctx_updates["last_action"] = "browser_refresh"
+    # Browser current_url always update if available
+    if browser_controller and getattr(browser_controller, "current_url", None):
+        ctx_updates["current_url"] = browser_controller.current_url
+        # infer current_site from url
+        url = browser_controller.current_url.lower() if browser_controller.current_url else ""
+        if "youtube" in url:
+            ctx_updates["current_site"] = "youtube"
+        elif "google" in url:
+            ctx_updates["current_site"] = "google"
+    # Foreground window as fallback for last_application
+    if controller and not ctx_updates.get("last_application"):
+        try:
+            win = controller.get_foreground_window()
+            if win:
+                win_low = win.lower()
+                for alias in ["brave", "chrome", "notepad", "calc", "code", "explorer", "edge"]:
+                    if alias in win_low:
+                        ctx_updates["last_application"] = alias
+                        break
+        except Exception:
+            pass
+    if response:
+        ctx_updates["last_task_status"] = "success" if "couldn't" not in response.lower() and "can't" not in response.lower() else "failed"
+    if ctx_updates:
+        logger.info("[CONTEXT] Updating context: %r", ctx_updates)
+        conversation_manager.update_context(**ctx_updates)
+
+
+def speak_with_cooldown(speaker, detector, text: str, cooldown_ms: int) -> bool:
+    """Speak with TTS suppression to avoid self-trigger. Returns True if spoken."""
+    if not text or not text.strip():
+        return False
+    if speaker is None or not speaker.is_available:
+        logger.info("[TTS] %s (TTS unavailable)", text[:80])
+        print(f'[TTS] {text}')
+        return False
+    try:
+        # Pause wake word during TTS
+        if detector:
+            detector.set_speaking(True)
+        logger.info("[TTS] %r", text[:80])
+        t0 = time.perf_counter()
+        ok = speaker.speak(text)
+        dt = time.perf_counter() - t0
+        logger.info("[TTS] %s in %.2fs", "ok" if ok else "failed", dt)
+        # Cooldown to avoid echo
+        if cooldown_ms > 0:
+            time.sleep(cooldown_ms / 1000.0)
+        if detector:
+            detector.set_speaking(False)
+        return ok
+    except Exception as exc:
+        logger.warning("TTS speak failed: %s", exc)
+        if detector:
+            try:
+                detector.set_speaking(False)
+            except Exception:
+                pass
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +930,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     browser_status = "ENABLED" if config.browser_enabled else "DISABLED"
     vision_status = "ENABLED" if config.vision_enabled else "DISABLED"
     agent_status = "ENABLED" if config.agent_enabled else "DISABLED"
+    conv_status = "ENABLED" if config.conversation_mode_enabled and config.conversation_context_enabled else ("DISABLED" if not config.conversation_mode_enabled else "CTX-DISABLED")
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
@@ -713,6 +945,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     print(f"🌐 Browser: {browser_status} ({config.browser_name} headless={config.browser_headless} timeout={config.browser_timeout_ms}ms)")
     print(f"👁️  Vision: {vision_status} (monitor={config.screen_monitor} max={config.screenshot_max_width}x{config.screenshot_max_height} conf>={config.vision_min_confidence})")
     print(f"🤖 Agent: {agent_status} (steps={config.max_task_steps} duration={config.max_task_duration_seconds}s)")
+    print(f"💬 Conversation: {conv_status} (timeout={config.conversation_timeout_seconds}s follow={config.follow_up_timeout_seconds}s turns={config.max_conversation_turns} cooldown={config.post_tts_cooldown_ms}ms)")
     print(f"Sample Rate: {config.sample_rate} Hz")
     print(f"Mode: {mode}")
     print("\nStatus: READY")
@@ -940,10 +1173,31 @@ def main() -> None:
         print("Agent: Disabled (AGENT_ENABLED=false)\n")
         logger.info("Agent disabled")
 
+    # ---- Initialize Conversation manager (Phase 9) ----
+    conversation_manager = None
+    if ConversationManager is not None:
+        try:
+            conversation_manager = ConversationManager(
+                enabled=config.conversation_mode_enabled,
+                conversation_timeout=config.conversation_timeout_seconds,
+                follow_up_timeout=config.follow_up_timeout_seconds,
+                max_turns=config.max_conversation_turns,
+                context_enabled=config.conversation_context_enabled,
+                post_tts_cooldown_ms=config.post_tts_cooldown_ms,
+            )
+            print(f"Conversation: {'Enabled' if config.conversation_mode_enabled else 'Disabled'} (timeout={config.conversation_timeout_seconds}s follow={config.follow_up_timeout_seconds}s turns={config.max_conversation_turns} cooldown={config.post_tts_cooldown_ms}ms)\n")
+            logger.info("ConversationManager initialized: enabled=%s timeout=%s follow=%s max_turns=%s",
+                        config.conversation_mode_enabled, config.conversation_timeout_seconds, config.follow_up_timeout_seconds, config.max_conversation_turns)
+        except Exception as exc:
+            print(f"WARNING: Conversation init failed: {exc}\n")
+            logger.warning("Conversation init failed: %s", exc)
+    else:
+        print("Conversation: module not available\n")
+
     print_banner(config, selected, speaker, mode_str)
 
     # -------------------------------------------------------------------
-    # Hands-free wake-word loop
+    # Hands-free wake-word loop — Phase 9 conversation mode
     # -------------------------------------------------------------------
     if use_wake_word:
         from app.wakeword.detector import WakeWordDetector  # already imported
@@ -954,10 +1208,10 @@ def main() -> None:
 
         def on_wake_word():
             # Called in detector thread — signal main thread
-            logger.info("Wake word callback fired — state=%s", state)
+            logger.info("[WAKE] Wake word detected — state=%s", state)
             print(f"\n✨ Wake word detected: \"{config.wake_word}\"")
+            logger.info("[WAKE] Wake word detected")
             play_wake_sound(config.wake_sound_enabled)
-            # Transition will be handled in main loop
             wake_event.set()
 
         detector = WakeWordDetector(
@@ -979,6 +1233,9 @@ def main() -> None:
         else:
             print(f"\n👂 Waiting for \"{config.wake_word}\"...")
             print("   Say the wake word hands-free. No keyboard needed.")
+            print("   After wake, you can chain commands without saying Hey Nova each time.")
+            print("   Conversation ends after ~{}s silence or {} turns.".format(config.conversation_timeout_seconds, config.max_conversation_turns))
+            print("   Say 'Stop', 'Cancel', or 'Goodbye' to end early.")
             print("   Press Ctrl+C or type Q+ENTER then press ENTER to quit.\n")
             logger.info("Wake-word engine initialized (backend=%s) — waiting", detector.get_backend())
             print(f"[Wake-word backend: {detector.get_backend()}]\n")
@@ -993,8 +1250,6 @@ def main() -> None:
         def keyboard_quit_listener():
             try:
                 while not stop_requested.is_set():
-                    # Use input with timeout via polling? Simpler: blocking input in daemon thread
-                    # This allows Q+ENTER to quit even in wake mode
                     line = sys.stdin.readline()
                     if not line:
                         continue
@@ -1007,217 +1262,370 @@ def main() -> None:
                 pass
 
         kb_thread = None
-        if detector.is_running():
+        if 'detector' in locals() and detector.is_running():
             kb_thread = threading.Thread(target=keyboard_quit_listener, daemon=True)
             kb_thread.start()
 
         try:
             consecutive = 0
             while not stop_requested.is_set():
-                # Check for quit via keyboard
                 if stop_requested.is_set():
                     break
 
                 # State: waiting for wake word
                 if state == WakeWordState.LISTENING_FOR_WAKE_WORD:
-                    logger.info("State: LISTENING_FOR_WAKE_WORD — waiting for wake word")
-                    # Wait for wake event (with timeout to allow checking stop)
+                    logger.info("[WAKE] Waiting for wake word")
+                    # Also handle conversation timeout if previously active (should be reset already)
+                    if conversation_manager and conversation_manager.handle_timeout_if_needed():
+                        logger.info("[TIMEOUT] Conversation timed out — back to wake")
+                        print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
                     triggered = wake_event.wait(timeout=0.5)
                     if not triggered:
-                        # No wake yet; continue waiting. Also show heartbeat every ~10s?
                         continue
-                    # Wake detected
                     wake_event.clear()
                     if stop_requested.is_set():
                         break
+                    # Wake detected -> start conversation
+                    logger.info("[WAKE] Wake word detected")
+                    if conversation_manager:
+                        conversation_manager.start()
+                        conversation_manager.set_state(ConversationState.WAKE_DETECTED)
+                        logger.info("[CONTEXT] Conversation active")
                     state = WakeWordState.LISTENING_FOR_COMMAND
-                    logger.info("State: LISTENING_FOR_COMMAND")
-                    # Detector is already paused by callback; now record command
-                    # Ensure mic released by detector before recording (detector paused, stream still open but not reading)
+                    # fall through to conversation loop — detector already paused by callback
                     # Brief pause to let detector drain
                     time.sleep(0.12)
+                    # Enter conversation inner loop
+                    turn_in_conversation = 0
+                    while True:
+                        if stop_requested.is_set():
+                            break
+                        # Check conversation timeout / turn limit before listening
+                        if conversation_manager:
+                            if conversation_manager.should_timeout():
+                                logger.info("[TIMEOUT] Conversation timeout — resetting")
+                                print("\n[ TIMEOUT ] Conversation ended due to inactivity.")
+                                try:
+                                    speak_with_cooldown(speaker, detector, "Going to sleep.", config.post_tts_cooldown_ms)
+                                except Exception:
+                                    pass
+                                conversation_manager.reset()
+                                logger.info("[RESET] Conversation reset after timeout")
+                                break
+                            if conversation_manager.check_turn_limit():
+                                logger.info("[RESET] Max turns reached %d", config.max_conversation_turns)
+                                try:
+                                    speak_with_cooldown(speaker, detector, 'Say "Hey Nova" to continue.', config.post_tts_cooldown_ms)
+                                except Exception:
+                                    pass
+                                conversation_manager.reset()
+                                break
+                            # Update state to LISTENING / CONVERSATION_ACTIVE
+                            if turn_in_conversation == 0:
+                                conversation_manager.set_state(ConversationState.LISTENING)
+                            else:
+                                conversation_manager.set_state(ConversationState.CONVERSATION_ACTIVE)
+                                logger.info("[CONTEXT] Conversation active turn %d", turn_in_conversation)
+                                print(f"\n[CONVERSATION_ACTIVE] Listening for follow-up ({turn_in_conversation+1}/{config.max_conversation_turns}) — no wake word needed.\n")
+                        state = WakeWordState.LISTENING_FOR_COMMAND
+                        logger.info("[LISTENING] Listening for command (turn %d)", turn_in_conversation+1)
+                        print("\n🎤 LISTENING..." if turn_in_conversation==0 else "\n🎤 LISTENING (follow-up)...")
+                        print("Speak now (say your command).\n" if turn_in_conversation==0 else "Speak follow-up (or wait to timeout).\n")
 
-                    # ---- Record command (timeout based) ----
-                    audio = record_command_auto(
-                        device_index=selected.index,
-                        sample_rate=config.sample_rate,
-                        timeout_seconds=config.command_timeout_seconds,
-                    )
+                        # Choose timeout: first command uses COMMAND_TIMEOUT, follow-ups use FOLLOW_UP
+                        timeout_seconds = config.command_timeout_seconds if turn_in_conversation == 0 else config.follow_up_timeout_seconds
+                        audio = record_command_auto(
+                            device_index=selected.index,
+                            sample_rate=config.sample_rate,
+                            timeout_seconds=timeout_seconds,
+                        )
 
-                    if audio is None:
-                        print("\nCommand cancelled.")
-                        state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                        logger.info("Returning to wake-word mode (cancelled)")
-                        detector.resume()
-                        print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
-                        continue
-
-                    # Silence / timeout handling
-                    if audio.size == 0:
-                        print("\n⚠️  No command detected (no audio).")
-                        print(f"👂 Waiting for \"{config.wake_word}\"...\n")
-                        state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                        logger.info("No command detected — returning to wake")
-                        detector.resume()
-                        continue
-
-                    rms = float(np.sqrt(np.mean(audio**2))) if audio.size else 0.0
-                    duration = audio.size / config.sample_rate
-                    if duration < 0.3 or rms < 0.003:
-                        print("\n⚠️  No command detected.")
-                        print(f"👂 Waiting for \"{config.wake_word}\"...\n")
-                        logger.info("Silence/timeout (rms=%.5f dur=%.2fs) — returning to wake", rms, duration)
-                        del audio
-                        state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                        detector.resume()
-                        continue
-
-                    # ---- PROCESSING ----
-                    state = WakeWordState.PROCESSING
-                    print("\nTranscribing...\n")
-                    logger.info("Transcription started (hands-free)")
-                    try:
-                        text = transcriber.transcribe(audio, sample_rate=config.sample_rate)
-                    except RuntimeError as exc:
-                        print(f"\n❌ Unable to transcribe audio.\nDetails: {exc}")
-                        logger.error("Transcription failed: %s", exc)
-                        del audio
-                        state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                        detector.resume()
-                        print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
-                        continue
-                    except Exception as exc:
-                        print(f"\n❌ Unexpected transcription error: {exc}")
-                        logger.exception("Unexpected")
-                        del audio
-                        state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                        detector.resume()
-                        print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
-                        continue
-                    finally:
-                        try:
-                            del audio
-                        except Exception:
-                            pass
-
-                    if not text or not text.strip():
-                        print("⚠️  No speech detected. Try again.")
-                        print(f"👂 Waiting for \"{config.wake_word}\"...\n")
-                        state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                        logger.info("Empty transcription — back to wake")
-                        detector.resume()
-                        continue
-                    else:
-                        print("📝 You said:\n")
-                        print(f'  "{text}"')
-                        logger.info("Transcription: %r (hands-free)", text[:120])
-
-                    # ---- SPEAKING (Phase 8: agent task or single) ----
-                    state = WakeWordState.SPEAKING
-                    # Check cancellation first (if task was running)
-                    if is_cancellation_request(text) and agent_executor and agent_executor.state == TaskState.RUNNING:
-                        agent_executor.cancel()
-                        response = "Task cancelled."
-                        logger.info("Cancellation requested during speaking state")
-                    elif is_multi_step_request(text) and config.agent_enabled and agent_planner and agent_executor:
-                        # Safety: unsafe multi-step rejected before planner
-                        if is_unsafe_request(text):
-                            response = "I can't perform that action yet."
-                            logger.warning("Unsafe multi-step rejected: %r", text[:120])
-                        else:
-                            # Multi-step task via planner
+                        if audio is None:
+                            print("\nCommand cancelled.")
+                            logger.info("[RESET] Command cancelled by user")
+                            if conversation_manager:
+                                conversation_manager.reset()
+                            state = WakeWordState.LISTENING_FOR_WAKE_WORD
                             try:
-                                plan = agent_planner.plan(text)
-                                if not plan or not plan.steps:
-                                    response = "I couldn't create a safe plan for that request."
-                                    logger.warning("Planner returned no plan")
+                                detector.resume()
+                            except Exception:
+                                pass
+                            print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                            break
+
+                        # Silence / timeout handling
+                        if audio.size == 0:
+                            logger.info("[TIMEOUT] No audio captured in conversation")
+                            if conversation_manager and conversation_manager.is_active():
+                                # Treat as timeout within conversation
+                                if conversation_manager.should_timeout():
+                                    conversation_manager.reset()
+                                    state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                    try:
+                                        detector.resume()
+                                    except Exception:
+                                        pass
+                                    print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                                    break
+                                # Otherwise, if first turn, back to wake; if follow-up, also break to wake after timeout
+                                print("\n⚠️  No command detected (no audio).")
+                                # For follow-up, consider timeout -> reset
+                                if turn_in_conversation > 0:
+                                    # No follow-up speech within window -> end conversation
+                                    conversation_manager.reset()
+                                    state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                    try:
+                                        detector.resume()
+                                    except Exception:
+                                        pass
+                                    print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                                    break
                                 else:
-                                    ok, err = validate_plan(plan, config)
-                                    if not ok:
-                                        # Distinguish too complex vs unsafe
-                                        if "too complex" in err.lower():
-                                            response = err
-                                        elif "prohibited" in err.lower() or "unsafe" in err.lower():
-                                            response = "I can't perform that action yet."
-                                        else:
-                                            response = err
-                                        logger.warning("Plan validation failed: %s", err)
+                                    state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                    try:
+                                        detector.resume()
+                                    except Exception:
+                                        pass
+                                    print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                                    break
+                            else:
+                                print("\n⚠️  No command detected (no audio).")
+                                print(f"👂 Waiting for \"{config.wake_word}\"...\n")
+                                state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                try:
+                                    detector.resume()
+                                except Exception:
+                                    pass
+                                break
+
+                        rms = float(np.sqrt(np.mean(audio**2))) if audio.size else 0.0
+                        duration = audio.size / config.sample_rate
+                        if duration < 0.3 or rms < 0.003:
+                            print("\n⚠️  No command detected.")
+                            logger.info("[TIMEOUT] Silence/timeout (rms=%.5f dur=%.2fs)", rms, duration)
+                            del audio
+                            if conversation_manager and conversation_manager.is_active() and turn_in_conversation > 0:
+                                # End follow-up silence as timeout
+                                if conversation_manager.should_timeout():
+                                    conversation_manager.reset()
+                                else:
+                                    # Still consider no command as not resetting immediately, but continue listening?
+                                    # For Phase 9 test we need timeout to return to wake after FOLLOW_UP timeout
+                                    # So if no speech on follow-up, wait for timeout already handled via next loop timeout check
+                                    pass
+                                # If still active, continue waiting? But to avoid tight loop, break to wake after one empty?
+                                # We break to wake to require Hey Nova again (matches Test 4)
+                                if conversation_manager and not conversation_manager.is_active():
+                                    state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                    try:
+                                        detector.resume()
+                                    except Exception:
+                                        pass
+                                    print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                                    break
+                                # If still active but empty, try again once more then timeout will trigger
+                                continue
+                            else:
+                                state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                try:
+                                    detector.resume()
+                                except Exception:
+                                    pass
+                                print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                                break
+
+                        # ---- PROCESSING ----
+                        state = WakeWordState.PROCESSING
+                        if conversation_manager:
+                            conversation_manager.set_state(ConversationState.PROCESSING)
+                        print("\nTranscribing...\n")
+                        logger.info("[PROCESSING] Transcription started (hands-free)")
+                        try:
+                            text = transcriber.transcribe(audio, sample_rate=config.sample_rate)
+                        except RuntimeError as exc:
+                            print(f"\n❌ Unable to transcribe audio.\nDetails: {exc}")
+                            logger.error("Transcription failed: %s", exc)
+                            del audio
+                            # Stay in conversation? Offer retry then continue
+                            try:
+                                speak_with_cooldown(speaker, detector, "I didn't catch that.", config.post_tts_cooldown_ms)
+                            except Exception:
+                                pass
+                            continue
+                        except Exception as exc:
+                            print(f"\n❌ Unexpected transcription error: {exc}")
+                            logger.exception("Unexpected")
+                            del audio
+                            continue
+                        finally:
+                            try:
+                                del audio
+                            except Exception:
+                                pass
+
+                        if not text or not text.strip():
+                            print("⚠️  No speech detected. Try again.")
+                            logger.info("Empty transcription — stay in conversation")
+                            # Stay in conversation for follow-up retry
+                            continue
+                        else:
+                            print("📝 You said:\n")
+                            print(f'  "{text}"')
+                            logger.info("[USER] %r", text[:120])
+                            if conversation_manager and conversation_manager.context_enabled:
+                                logger.info("[CONTEXT] %r", conversation_manager.get_context())
+
+                        # ---- Check stop/cancel/goodbye BEFORE processing ----
+                        low_text = text.strip().lower()
+                        if low_text in ("stop", "cancel", "goodbye", "good bye", "bye", "exit", "quit") or is_cancellation_request(text):
+                            logger.info("[RESET] Cancellation phrase detected: %r", text)
+                            if conversation_manager:
+                                conversation_manager.reset()
+                            state = WakeWordState.SPEAKING
+                            if conversation_manager:
+                                conversation_manager.set_state(ConversationState.SPEAKING)
+                            # Stop any ongoing TTS
+                            try:
+                                speaker.stop()
+                            except Exception:
+                                pass
+                            response = "Okay."
+                            print("\n🔊 Nova:\n")
+                            print(f'  "{response}"')
+                            speak_with_cooldown(speaker, detector, response, config.post_tts_cooldown_ms)
+                            state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                            if conversation_manager:
+                                conversation_manager.set_state(ConversationState.IDLE)
+                            print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                            try:
+                                detector.resume()
+                            except Exception:
+                                pass
+                            break
+
+                        # ---- EXECUTING ----
+                        state = WakeWordState.SPEAKING  # will be set correctly below
+                        if conversation_manager:
+                            conversation_manager.set_state(ConversationState.EXECUTING)
+                        logger.info("[EXECUTE] Routing command: %r", text[:120])
+                        ctx = conversation_manager.get_context() if conversation_manager else {}
+                        # Check for multi-step via agent
+                        if is_multi_step_request(text) and config.agent_enabled and agent_planner and agent_executor:
+                            if is_unsafe_request(text):
+                                response = "I can't perform that action yet."
+                                logger.warning("Unsafe multi-step rejected: %r", text[:120])
+                            else:
+                                try:
+                                    plan = agent_planner.plan(text, ctx)
+                                    if not plan or not plan.steps:
+                                        response = "I couldn't create a safe plan for that request."
+                                        logger.warning("Planner returned no plan")
                                     else:
-                                        # Voice start
-                                        if speaker.is_available:
-                                            try:
-                                                speaker.speak("Okay, I'll do that.")
-                                            except Exception:
-                                                pass
-                                        # Execute task
-                                        status = agent_executor.execute(plan)
-                                        if status.state == TaskState.COMPLETED:
-                                            response = "Done."
-                                        elif status.state == TaskState.CANCELLED:
-                                            response = "Task cancelled."
-                                        elif status.state == TaskState.FAILED:
-                                            err_msg = status.error or "I couldn't complete that task."
-                                            # Provide more detail if last step was find
-                                            if status.results and not status.results[-1].get("ok"):
-                                                last = status.results[-1].get("msg", "")
-                                                if "couldn't find" in last.lower():
-                                                    response = last
-                                                elif "too long" in err_msg.lower():
-                                                    response = "The task took too long, so I stopped."
+                                        ok, err = validate_plan(plan, config)
+                                        if not ok:
+                                            if "too complex" in err.lower():
+                                                response = err
+                                            elif "prohibited" in err.lower() or "unsafe" in err.lower():
+                                                response = "I can't perform that action yet."
+                                            else:
+                                                response = err
+                                            logger.warning("[PLAN] Validation failed: %s", err)
+                                        else:
+                                            logger.info("[PLAN] Executing %d steps for goal %r", len(plan.steps), plan.goal)
+                                            if speaker.is_available:
+                                                try:
+                                                    # Use cooldown version but without blocking follow-up? Quick ack
+                                                    speaker.speak("Okay, I'll do that.")
+                                                except Exception:
+                                                    pass
+                                            status = agent_executor.execute(plan)
+                                            if status.state == TaskState.COMPLETED:
+                                                response = "Done."
+                                            elif status.state == TaskState.CANCELLED:
+                                                response = "Task cancelled."
+                                            elif status.state == TaskState.FAILED:
+                                                err_msg = status.error or "I couldn't complete that task."
+                                                if status.results and not status.results[-1].get("ok"):
+                                                    last = status.results[-1].get("msg", "")
+                                                    if "couldn't find" in last.lower():
+                                                        response = last
+                                                    elif "too long" in err_msg.lower():
+                                                        response = "The task took too long, so I stopped."
+                                                    else:
+                                                        response = err_msg
                                                 else:
                                                     response = err_msg
+                                                if "too long" in err_msg.lower():
+                                                    response = "The task took too long, so I stopped."
                                             else:
-                                                response = err_msg
-                                            if "too long" in err_msg.lower():
-                                                response = "The task took too long, so I stopped."
-                                        else:
-                                            response = "I couldn't complete that task."
-                            except TimeoutError:
-                                response = "The task took too long, so I stopped."
-                                logger.warning("Task timeout")
+                                                response = "I couldn't complete that task."
+                                except TimeoutError:
+                                    response = "The task took too long, so I stopped."
+                                    logger.warning("Task timeout")
+                                except Exception as exc:
+                                    logger.exception("Agent task failed: %s", exc)
+                                    response = "I couldn't create a safe plan for that request."
+                        else:
+                            # Single-step with context
+                            try:
+                                # Log router decision
+                                logger.info("[ROUTER] Routing with context %r", ctx)
+                                response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer, context=ctx)
                             except Exception as exc:
-                                logger.exception("Agent task failed: %s", exc)
-                                response = "I couldn't create a safe plan for that request."
-                    else:
-                        # Single-step fallback
-                        try:
-                            response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
-                        except Exception as exc:
-                            logger.exception("Route failed: %s", exc)
-                            response = "I couldn't process that command right now."
-                    if response:
-                        print("\n🔊 Nova:\n")
-                        print(f'  "{response}"')
-                        logger.info("Response: %r", response[:120])
-                        if speaker.is_available:
-                            # Suppress wake-word during TTS
-                            detector.set_speaking(True)
-                            t0 = time.perf_counter()
-                            ok = speaker.speak(response)
-                            dt = time.perf_counter() - t0
-                            logger.info("TTS %s in %.2fs", "ok" if ok else "failed", dt)
-                            detector.set_speaking(False)
-                            if not ok:
-                                print("(TTS failed — response shown above)")
-                        # Cooldown already applied via set_speaking resume timer
-                    else:
-                        logger.debug("Empty response")
+                                logger.exception("Route failed: %s", exc)
+                                response = "I couldn't process that command right now."
 
-                    consecutive += 1
-                    state = WakeWordState.LISTENING_FOR_WAKE_WORD
-                    logger.info("Returning to wake-word mode (consecutive=%d)", consecutive)
-                    print(f"\n👂 Waiting for \"{config.wake_word}\"... ({consecutive} interactions completed)\n")
-                    # Ensure detector resumed (speak path already resumes via timer, but ensure)
-                    # Small delay to avoid immediate echo
-                    time.sleep(config.wake_word_cooldown_ms / 1000.0 * 0.5)
-                    if not detector.is_running():
-                        detector.resume()
-                    else:
-                        # If still paused, resume now (in case speak path timer not yet fired)
-                        try:
-                            detector.resume()
-                        except Exception:
-                            pass
+                        # ---- SPEAKING ----
+                        if conversation_manager:
+                            conversation_manager.set_state(ConversationState.SPEAKING)
+                        state = WakeWordState.SPEAKING
+                        if response:
+                            print("\n🔊 Nova:\n")
+                            print(f'  "{response}"')
+                            logger.info("[TTS] Response: %r", response[:120])
+                            # Use cooldown helper to avoid echo and allow interruption foundation
+                            speak_with_cooldown(speaker, detector, response, config.post_tts_cooldown_ms)
+                        else:
+                            logger.debug("Empty response")
+
+                        # ---- Update conversation context & turn ----
+                        if conversation_manager:
+                            conversation_manager.increment_turn()
+                            conversation_manager.add_turn(text, response or "")
+                            update_context_after_command(text, response or "", pc_controller, browser_controller, vision_analyzer, conversation_manager)
+                            turn_in_conversation += 1
+                            consecutive += 1
+                            logger.info("[CONTEXT] Turn %d complete, context %r", turn_in_conversation, conversation_manager.get_context())
+                            # Check turn limit after increment
+                            if conversation_manager.check_turn_limit():
+                                logger.info("[RESET] Turn limit reached")
+                                try:
+                                    speak_with_cooldown(speaker, detector, 'Say "Hey Nova" to continue.', config.post_tts_cooldown_ms)
+                                except Exception:
+                                    pass
+                                conversation_manager.reset()
+                                state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                                print(f"\n👂 Waiting for \"{config.wake_word}\"...\n")
+                                try:
+                                    detector.resume()
+                                except Exception:
+                                    pass
+                                break
+                            # Continue inner loop for follow-up without wake word
+                            # Small pause before next listen (already done via cooldown)
+                            continue
+                        else:
+                            # No conversation manager -> single turn then back to wake
+                            consecutive += 1
+                            state = WakeWordState.LISTENING_FOR_WAKE_WORD
+                            logger.info("Returning to wake-word mode (consecutive=%d)", consecutive)
+                            print(f"\n👂 Waiting for \"{config.wake_word}\"... ({consecutive} interactions completed)\n")
+                            time.sleep(config.wake_word_cooldown_ms / 1000.0 * 0.5)
+                            try:
+                                detector.resume()
+                            except Exception:
+                                pass
+                            break
 
         except KeyboardInterrupt:
             print("\nExiting Nova. Goodbye!")
@@ -1229,6 +1637,7 @@ def main() -> None:
             except Exception as exc:
                 logger.warning("Detector stop error: %s", exc)
             # Fall through to common shutdown
+
 
     # -------------------------------------------------------------------
     # Manual fallback loop (Phase 1/2 compat)
@@ -1309,7 +1718,8 @@ def main() -> None:
                             logger.warning("Unsafe multi-step rejected: %r", text[:120])
                         else:
                             try:
-                                plan = agent_planner.plan(text)
+                                ctx_m = conversation_manager.get_context() if 'conversation_manager' in locals() and conversation_manager else None
+                                plan = agent_planner.plan(text, ctx_m)
                                 if not plan or not plan.steps:
                                     response = "I couldn't create a safe plan for that request."
                                 else:
@@ -1343,7 +1753,8 @@ def main() -> None:
                                 response = "I couldn't create a safe plan for that request."
                     else:
                         try:
-                            response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer)
+                            ctx_manual = conversation_manager.get_context() if 'conversation_manager' in locals() and conversation_manager else None
+                            response = route_pc_command(text, pc_controller, interpreter, config, browser_controller, vision_analyzer, context=ctx_manual)
                         except Exception as exc:
                             logger.exception("Route failed: %s", exc)
                             response = "I couldn't process that command right now."
@@ -1364,6 +1775,13 @@ def main() -> None:
 
     # ---- Common clean shutdown ----
     logger.info("Shutting down Nova...")
+    # Phase 9: clear conversation context on exit
+    try:
+        if 'conversation_manager' in locals() and conversation_manager is not None:
+            conversation_manager.reset()
+            logger.info("[RESET] Conversation reset on shutdown")
+    except Exception:
+        pass
     try:
         if 'browser_controller' in locals() and browser_controller is not None:
             try:

@@ -70,11 +70,12 @@ class CommandInterpreter:
             return s[start:end+1]
         return s if s.startswith("{") else None
 
-    def interpret(self, text: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    def interpret(self, text: str, context: Optional[Dict[str, Any]] = None) -> Tuple[Optional[Dict[str, Any]], str]:
         """Interpret text via LLM. Returns (validated_action_dict_or_None, error_message).
 
         Validated dict will have 'action' key if successful. None means failure
         — caller should handle fallback.
+        context: optional short-term conversation context dict (no sensitive data).
         """
         if not text or not text.strip():
             return None, "Empty text"
@@ -84,6 +85,20 @@ class CommandInterpreter:
 
         # Only send transcribed text + schema — no sensitive data
         user_msg = text.strip()
+        # Inject context hints if available (Phase 9)
+        if context and isinstance(context, dict):
+            # Filter to allowed context keys only (no sensitive)
+            allowed_keys = {"last_application", "current_url", "current_site", "last_action", "last_search", "turn_count"}
+            ctx_filtered = {k: v for k, v in context.items() if k in allowed_keys and v}
+            if ctx_filtered:
+                ctx_str = ", ".join(f"{k}={v!r}" for k, v in ctx_filtered.items())
+                # Append context hint without blowing up token count
+                hint = f" [Recent context: {ctx_str}]"
+                if len(user_msg) + len(hint) <= 500:
+                    user_msg = f"{user_msg}{hint}"
+                else:
+                    user_msg = user_msg[: 500 - len(hint)] + hint
+                logger.info("[CONTEXT] LLM interpret with context: %s", ctx_str)
         # Truncate very long input to avoid cost/abuse
         if len(user_msg) > 500:
             user_msg = user_msg[:500]

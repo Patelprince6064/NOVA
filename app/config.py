@@ -64,6 +64,13 @@ class Config:
     max_step_retries: int = 1
     max_task_duration_seconds: int = 60
     max_wait_seconds: int = 10
+    # Conversation (Phase 9) — hands-free follow-up
+    conversation_mode_enabled: bool = True
+    conversation_timeout_seconds: int = 8
+    follow_up_timeout_seconds: int = 6
+    max_conversation_turns: int = 10
+    conversation_context_enabled: bool = True
+    post_tts_cooldown_ms: int = 300
 
     @classmethod
     def load(cls) -> "Config":
@@ -166,6 +173,12 @@ class Config:
         max_step_retries = _env_int("MAX_STEP_RETRIES", 1)
         max_task_duration_seconds = _env_int("MAX_TASK_DURATION_SECONDS", 60)
         max_wait_seconds = _env_int("MAX_WAIT_SECONDS", 10)
+        conversation_mode_enabled = _env_bool("CONVERSATION_MODE_ENABLED", True)
+        conversation_timeout_seconds = _env_int("CONVERSATION_TIMEOUT_SECONDS", 8)
+        follow_up_timeout_seconds = _env_int("FOLLOW_UP_TIMEOUT_SECONDS", 6)
+        max_conversation_turns = _env_int("MAX_CONVERSATION_TURNS", 10)
+        conversation_context_enabled = _env_bool("CONVERSATION_CONTEXT_ENABLED", True)
+        post_tts_cooldown_ms = _env_int("POST_TTS_COOLDOWN_MS", 300)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -250,6 +263,18 @@ class Config:
         if not 1 <= max_wait_seconds <= 30:
             logger.warning("MAX_WAIT_SECONDS=%d out of range (1-30), clamping to 10.", max_wait_seconds)
             max_wait_seconds = 10
+        if not 3 <= conversation_timeout_seconds <= 30:
+            logger.warning("CONVERSATION_TIMEOUT_SECONDS=%d out of range (3-30), clamping to 8.", conversation_timeout_seconds)
+            conversation_timeout_seconds = 8
+        if not 2 <= follow_up_timeout_seconds <= 20:
+            logger.warning("FOLLOW_UP_TIMEOUT_SECONDS=%d out of range (2-20), clamping to 6.", follow_up_timeout_seconds)
+            follow_up_timeout_seconds = 6
+        if not 2 <= max_conversation_turns <= 20:
+            logger.warning("MAX_CONVERSATION_TURNS=%d out of range (2-20), clamping to 10.", max_conversation_turns)
+            max_conversation_turns = 10
+        if not 0 <= post_tts_cooldown_ms <= 2000:
+            logger.warning("POST_TTS_COOLDOWN_MS=%d out of range (0-2000), clamping to 300.", post_tts_cooldown_ms)
+            post_tts_cooldown_ms = 300
 
         config = cls(
             whisper_model=whisper_model,
@@ -295,9 +320,15 @@ class Config:
             max_step_retries=max_step_retries,
             max_task_duration_seconds=max_task_duration_seconds,
             max_wait_seconds=max_wait_seconds,
+            conversation_mode_enabled=conversation_mode_enabled,
+            conversation_timeout_seconds=conversation_timeout_seconds,
+            follow_up_timeout_seconds=follow_up_timeout_seconds,
+            max_conversation_turns=max_conversation_turns,
+            conversation_context_enabled=conversation_context_enabled,
+            post_tts_cooldown_ms=post_tts_cooldown_ms,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d vision=%s provider=%s model=%s vtimeout=%d monitor=%s max=%dx%d conf=%.2f click_test=%s agent=%s steps=%d retries=%d duration=%d wait=%d conv=%s timeout=%d follow=%d max_turns=%d ctx=%s cooldown=%d",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -339,5 +370,11 @@ class Config:
             max_step_retries,
             max_task_duration_seconds,
             max_wait_seconds,
+            "enabled" if conversation_mode_enabled else "disabled",
+            conversation_timeout_seconds,
+            follow_up_timeout_seconds,
+            max_conversation_turns,
+            "enabled" if conversation_context_enabled else "disabled",
+            post_tts_cooldown_ms,
         )
         return config

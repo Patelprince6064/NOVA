@@ -56,7 +56,7 @@ class TaskPlanner:
     def is_available(self) -> bool:
         return bool(self.enabled)
 
-    def plan(self, user_request: str) -> Optional[TaskPlan]:
+    def plan(self, user_request: str, context: Optional[dict] = None) -> Optional[TaskPlan]:
         """Generate plan via LLM or heuristic fallback. Returns None if planner disabled."""
         if not self.enabled:
             logger.debug("Planner disabled")
@@ -66,19 +66,19 @@ class TaskPlanner:
         # First try LLM if available
         if self.llm_enabled and self.api_key and self.provider == "openai":
             try:
-                plan = self._plan_via_llm(user_request)
+                plan = self._plan_via_llm(user_request, context)
                 if plan:
                     logger.info("Planner LLM generated: goal=%r steps=%d", plan.goal, len(plan.steps))
                     return plan
             except Exception as exc:
                 logger.warning("LLM planner failed, falling back to heuristic: %s", exc)
         # Fallback heuristic — deterministic for testing without LLM
-        plan = self._plan_heuristic(user_request)
+        plan = self._plan_heuristic(user_request, context)
         if plan:
             logger.info("Planner heuristic generated: goal=%r steps=%d", plan.goal, len(plan.steps))
         return plan
 
-    def _plan_via_llm(self, text: str) -> Optional[TaskPlan]:
+    def _plan_via_llm(self, text: str, context: Optional[dict] = None) -> Optional[TaskPlan]:
         try:
             from openai import OpenAI
         except ImportError:
@@ -86,6 +86,15 @@ class TaskPlanner:
         client = OpenAI(api_key=self.api_key, timeout=self.timeout)
         # Truncate long request
         txt = text.strip()[:800]
+        # Inject context for follow-up (Phase 9) — e.g., "Play the first one" needs prior search
+        if context and isinstance(context, dict):
+            allowed = {k: v for k, v in context.items() if k in ("last_application", "current_url", "current_site", "last_action", "last_search") and v}
+            if allowed:
+                ctx_str = ", ".join(f"{k}={v!r}" for k, v in allowed.items())
+                hint = f" [Recent context: {ctx_str}]"
+                if len(txt) + len(hint) <= 800:
+                    txt = txt + hint
+                logger.info("[CONTEXT] Planner context: %s", ctx_str)
         try:
             resp = client.chat.completions.create(
                 model=self.model,
@@ -135,7 +144,7 @@ class TaskPlanner:
             return s[start:end+1]
         return None
 
-    def _plan_heuristic(self, text: str) -> Optional[TaskPlan]:
+    def _plan_heuristic(self, text: str, context: Optional[dict] = None) -> Optional[TaskPlan]:
         """Simple deterministic planner for tests without LLM — splits on 'and' / ',' and maps keywords."""
         low = text.strip().lower()
         # Remove leading hey nova
@@ -204,7 +213,23 @@ class TaskPlanner:
                     steps.append(TaskStep(id=sid, action="search_web", parameters={"query": q}))
                 sid += 1
             elif any(k in part for k in ["play the first", "click the first", "first video", "first result"]):
+                # Context-aware: require prior search or youtube context, else ambiguous
+                ctx_ok = True
+                if context is not None:
+                    has_search = context.get("last_search") or context.get("last_action") in ("youtube_search", "search_web", "open_url")
+                    is_yt = context.get("current_site") == "youtube" or (context.get("current_url") and "youtube" in str(context.get("current_url")).lower())
+                    if not has_search and not is_yt and not context.get("last_action"):
+                        # No context — caller should have asked clarification already; skip generating
+                        continue
                 # Two steps: find + click
+                steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
+                sid += 1
+                steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))
+                sid += 1
+            elif part in ("play the first one", "play the first song", "play first song") or part == "play the first one":
+                # Explicit single-turn follow-up (also handled via router but keep heuristic)
+                if context is not None and not context.get("last_search") and context.get("last_action") not in ("youtube_search", "search_web"):
+                    continue
                 steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
                 sid += 1
                 steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))
