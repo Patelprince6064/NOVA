@@ -4,48 +4,48 @@ Hands-free PC voice assistant (Windows).
 
 ## Current Phase
 
-**Phase 2 — Voice Input + Speech-to-Text + Text-to-Speech**
+**Phase 3 — Hands-Free Wake Word**
 
 ```
-Microphone → Record → Speech-to-text → Response → Speak aloud
+  👂 Waiting for "Hey Nova"
+           ↓
+  🎤 Listening (auto, no ENTER)
+           ↓
+  📝 Speech-to-text (local faster-whisper, only after wake)
+           ↓
+  🔊 Voice response (local pyttsx3)
+           ↓
+  👂 Waiting again
 ```
 
-Offline, local, privacy-focused. No cloud services, no LLM.
+Fully hands-free, offline, privacy-focused. No cloud, no LLM.
 
 ---
 
 ## Features
 
 ### Phase 1
-- Microphone detection (lists all input devices, auto-selects default)
-- Push-to-talk voice recording (16 kHz, mono, float32)
-- Local speech-to-text via `faster-whisper`
-- Configurable Whisper model (`tiny` / `base` / `small` / ...)
-- Handles silence, empty speech, and microphone errors gracefully
-- Privacy-focused: audio stays in memory, never written to disk
+- Microphone detection, push-to-talk recording (16 kHz mono), local STT via `faster-whisper`
 
-### Phase 2 (new)
-- Local text-to-speech via `pyttsx3` (SAPI5 on Windows, offline)
-- TTS engine initialized once and reused (low latency)
-- Configurable voice, speaking rate, and volume via `.env`
-- Voice listing utility
-- Simple local response system (no LLM):
-  - `hello` → `Hello! I'm Nova.`
-  - `hi` → `Hi! I'm ready.`
-  - `how are you` → `I'm doing great. I'm ready for your next command.`
-  - `test` → `Voice system is working correctly.`
-  - unknown → `I heard you say: ...`
-- Graceful TTS failure handling (STT keeps working)
-- Interruptible speech (`speaker.stop()`) and clean shutdown
+### Phase 2
+- Local TTS via `pyttsx3` (SAPI5), configurable voice/rate/volume, simple responses
+
+### Phase 3 (new)
+- Hands-free wake-word detection — say **"Hey Nova"** without touching keyboard
+- Local wake-word engine (Vosk with `vosk-model-small-en-us-0.15`, fallback dummy energy detector — no cloud)
+- State machine: `IDLE → LISTENING_FOR_WAKE_WORD → LISTENING_FOR_COMMAND → PROCESSING → SPEAKING → LISTENING_FOR_WAKE_WORD`
+- Audio Input Manager: single mic ownership, wake mode pauses during command/TTS
+- Wake sound beep (configurable `WAKE_SOUND_ENABLED`, short `winsound.Beep`)
+- Command timeout `COMMAND_TIMEOUT_SECONDS` (default 8s) + silence handling
+- False-activation threshold `WAKE_WORD_THRESHOLD` + cooldown `WAKE_WORD_COOLDOWN_MS` to avoid TTS echo
+- TTS echo prevention: detection paused during `SPEAKING`
+- Backward compatible manual mode: `python -m app.main --manual` (ENTER loop)
 
 ---
 
 ## Requirements
 
-- Python 3.11+
-- Windows 10/11 (SAPI5 for TTS)
-- A working microphone + speakers/headphones
-- Internet connection on first run (to download the Whisper model)
+- Python 3.11+, Windows 10/11, mic + speakers, internet first run for Whisper
 
 ---
 
@@ -60,6 +60,16 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+Wake-word model (for accurate "Hey Nova" phrase):
+- Auto-download on first run (40MB) or manually:
+```powershell
+pip install vosk
+# Download https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+# Extract to nova/models/vosk-model-small-en-us-0.15
+# Verify: dir models\vosk-model-small-en-us-0.15\am\final.mdl exists
+```
+Without the model, Nova falls back to dummy energy detector (any loud speech triggers — less accurate but still hands-free).
+
 ---
 
 ## Configuration
@@ -71,104 +81,74 @@ notepad .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `WHISPER_MODEL` | `base` | `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `WHISPER_MODEL` | `base` | `tiny`/`base`/`small`/`medium`/`large-v3` |
 | `WHISPER_DEVICE` | `cpu` | `cpu` or `cuda` |
-| `WHISPER_COMPUTE_TYPE` | `int8` | `int8` (CPU), `float16` (CUDA) |
-| `SAMPLE_RATE` | `16000` | Audio sample rate (Hz) |
-| `MAX_RECORDING_SECONDS` | `15` | Auto-stop after this many seconds |
-| `WHISPER_LANGUAGE` | _(auto)_ | Force language e.g. `en` |
-| `TTS_ENABLED` | `true` | Enable/disable speech output |
-| `TTS_RATE` | `175` | Speaking rate (50–400) |
-| `TTS_VOLUME` | `1.0` | Volume 0.0–1.0 |
-| `TTS_VOICE` | _(default)_ | Voice ID substring; empty = system default |
+| `WHISPER_COMPUTE_TYPE` | `int8` | `int8`/`float16` |
+| `SAMPLE_RATE` | `16000` | Hz |
+| `MAX_RECORDING_SECONDS` | `15` | Manual mode auto-stop |
+| `TTS_ENABLED` | `true` | Enable TTS |
+| `TTS_RATE` | `175` | 50–400 |
+| `TTS_VOLUME` | `1.0` | 0.0–1.0 |
+| `TTS_VOICE` | _(default)_ | Voice ID substring |
+| `WAKE_WORD_ENABLED` | `true` | Enable hands-free |
+| `WAKE_WORD` | `hey nova` | Phrase (lowercase) |
+| `WAKE_WORD_THRESHOLD` | `0.5` | 0.0–1.0 sensitivity (Vosk: unused, dummy: energy) |
+| `COMMAND_TIMEOUT_SECONDS` | `8` | 1–30 s wait after wake |
+| `WAKE_SOUND_ENABLED` | `true` | Beep on wake |
+| `WAKE_WORD_COOLDOWN_MS` | `500` | 0–5000 ms ignore after trigger/TTS |
 
-List available voices:
-
+List TTS voices:
 ```powershell
 python -c "from app.tts.speaker import get_available_voices; [print(f'[{i}] {v.name} — {v.id}') for i,v in enumerate(get_available_voices())]"
-# or inside Python:
-# from app.tts.speaker import Speaker; Speaker().initialize(); Speaker().print_voices()
 ```
-
-On Windows typical voices: `Microsoft David`, `Microsoft Zira`, `Microsoft Mark`.
 
 ---
 
 ## Usage
 
+Hands-free (default):
 ```powershell
 python -m app.main
+# 👂 Waiting for "hey nova"...
+# Say: Hey Nova
+# 🎤 Listening... -> speak command -> Nova responds -> waiting again
+# Q + ENTER or Ctrl+C to quit
 ```
 
-Expected startup:
-
-```
-Nova Voice Engine
------------------
-
-Available microphones:
-  [0] Microphone (Realtek)
-  [1] Headset Microphone
-
-Selected microphone: [0] Microphone
-
-Loading speech recognition model...
-Speech recognition ready.
-
-Text-to-speech: Ready
-
-Available voices:
-  [0] Microsoft David - English (United States) (HKEY_LOCAL_MACHINE\...)
-  [1] Microsoft Zira - English (United States) (...)
-  [2] Microsoft Mark - English (United States) (...)
-
-Selected voice: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0
-
-Nova:
-"Voice system initialized."
-
-================================
-        NOVA VOICE ENGINE
-================================
-
-🎤 Microphone: Microphone — READY
-📝 Speech recognition: READY (model=base)
-🔊 Voice output: READY (rate=175 vol=1.0)
-
-Status: READY
-
-Press ENTER to speak.
-Press Q + ENTER to quit.
+Manual (Phase 1/2 compat):
+```powershell
+python -m app.main --manual
+# Press ENTER to record
 ```
 
-Recording:
-
+Startup shows:
 ```
-🎤 LISTENING...
-Speak now.
-
-📝 You said:
-"Hello Nova"
-
-🔊 Nova:
-"Hello! I'm Nova."
-
-Status: READY
+Wake-word backend: vosk (or dummy)
+👂 Waiting for "hey nova"...
 ```
 
-If TTS fails:
-
+On wake:
 ```
-WARNING:
-Text-to-speech is unavailable.
-Voice input will continue to work.
+✨ Wake word detected: "hey nova"
+🔔
+🎤 LISTENING... Speak now
+📝 You said: "hello"
+🔊 Nova: "Hello! I'm Nova."
+👂 Waiting for "hey nova"...
+```
+
+Silence timeout:
+```
+🎤 Listening...
+⚠️ No command detected.
+👂 Waiting for "hey nova"...
 ```
 
 ---
 
-## Microphone Permissions (Windows)
+## Microphone Permissions
 
-Settings → Privacy & security → Microphone → Enable *Microphone access* and *Let desktop apps access your microphone*.
+Settings → Privacy & security → Microphone → Enable access for desktop apps.
 
 ---
 
@@ -176,13 +156,11 @@ Settings → Privacy & security → Microphone → Enable *Microphone access* an
 
 | Problem | Fix |
 |---|---|
-| `sounddevice` install fails | Use python.org Python, not Windows Store |
-| Model download slow | Use `WHISPER_MODEL=tiny` |
-| `WHISPER_DEVICE=cuda` fails | Install CUDA toolkit or use `cpu` |
-| TTS says `pyttsx3 not installed` | `pip install pyttsx3 comtypes` |
-| TTS voice not found | Leave `TTS_VOICE` empty or copy exact ID from voice list |
-| No speech detected | Check mic volume in Windows Sound settings |
-| TTS silent | Check speaker volume, try different `TTS_VOICE`, check `TTS_ENABLED` |
+| Wake never triggers | Install vosk & model, check mic volume, lower `WAKE_WORD_THRESHOLD`, speak clearly |
+| False activations | Increase `WAKE_WORD_THRESHOLD`, increase `WAKE_WORD_COOLDOWN_MS` |
+| TTS triggers itself | Fixed: detection paused during `SPEAKING` + cooldown; if echo still, increase cooldown to 1000 |
+| `vosk not installed` | `pip install vosk` — dummy fallback still works but less accurate |
+| `sounddevice` fail | python.org Python, not Store; check Device Manager |
 
 ---
 
@@ -192,18 +170,17 @@ Settings → Privacy & security → Microphone → Enable *Microphone access* an
 nova/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # Mic detection, recording loop, responses, TTS integration
-│   ├── config.py            # .env configuration (Whisper + TTS)
+│   ├── main.py              # State machine, hands-free loop, manual fallback
+│   ├── config.py            # Whisper + TTS + Wake-word .env
 │   ├── speech/
-│   │   ├── __init__.py
-│   │   └── transcriber.py   # faster-whisper wrapper (load once)
-│   └── tts/
+│   │   └── transcriber.py
+│   ├── tts/
+│   │   └── speaker.py
+│   └── wakeword/            # NEW Phase 3
 │       ├── __init__.py
-│       └── speaker.py       # pyttsx3 wrapper (init once, speak/stop/shutdown)
-├── tests/
-│   └── __init__.py
+│       └── detector.py      # WakeWordDetector (vosk/dummy), pause/resume, mic ownership
+├── tests/__init__.py
 ├── .env.example
-├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
@@ -212,22 +189,17 @@ nova/
 
 ## Privacy
 
-- Audio kept in RAM only, released after transcription.
-- No recordings written to disk.
-- No audio sent to external services — STT and TTS are fully local.
-- No conversation history or database.
-- Logs do not contain speech content.
+- Wake detection local (Vosk/dummy), Whisper only after wake, TTS local.
+- Audio in RAM only, released after transcribe. No recordings saved. No cloud. Logs don't contain speech.
 
 ---
 
 ## Roadmap
 
-- [x] **Phase 1** — Voice input + speech-to-text
-- [x] **Phase 2** — Text-to-speech + voice responses (current)
-- [ ] Phase 3 — Wake word, agent, PC control
-- [ ] Phase 4 — Browser automation & LLM
-
----
+- [x] Phase 1 — STT
+- [x] Phase 2 — TTS
+- [x] Phase 3 — Hands-free wake word (current)
+- [ ] Phase 4 — LLM agent, PC control
 
 ## License
 

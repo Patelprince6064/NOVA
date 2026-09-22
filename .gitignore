@@ -42,3 +42,7 @@ desktop.ini
 *.flac
 *.m4a
 recordings/
+
+# Vosk wake-word model (40MB, auto-downloaded)
+models/
+*.zip

@@ -25,6 +25,13 @@ class Config:
     tts_rate: int = 175
     tts_volume: float = 1.0
     tts_voice: str = ""
+    # Wake-word settings (Phase 3)
+    wake_word_enabled: bool = True
+    wake_word: str = "hey nova"
+    wake_word_threshold: float = 0.5
+    command_timeout_seconds: int = 8
+    wake_sound_enabled: bool = True
+    wake_word_cooldown_ms: int = 500
 
     @classmethod
     def load(cls) -> "Config":
@@ -87,6 +94,12 @@ class Config:
         tts_rate = _env_int("TTS_RATE", 175)
         tts_volume = _env_float("TTS_VOLUME", 1.0)
         tts_voice = _env_str("TTS_VOICE", "") if os.getenv("TTS_VOICE") and os.getenv("TTS_VOICE", "").strip() else ""
+        wake_word_enabled = _env_bool("WAKE_WORD_ENABLED", True)
+        wake_word = _env_str("WAKE_WORD", "hey nova")
+        wake_word_threshold = _env_float("WAKE_WORD_THRESHOLD", 0.5)
+        command_timeout_seconds = _env_int("COMMAND_TIMEOUT_SECONDS", 8)
+        wake_sound_enabled = _env_bool("WAKE_SOUND_ENABLED", True)
+        wake_word_cooldown_ms = _env_int("WAKE_WORD_COOLDOWN_MS", 500)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -111,6 +124,19 @@ class Config:
         if not 50 <= tts_rate <= 400:
             logger.warning("TTS_RATE=%d out of range (50-400), clamping.", tts_rate)
             tts_rate = max(50, min(400, tts_rate))
+        # Clamp wake-word settings
+        if not 0.0 <= wake_word_threshold <= 1.0:
+            logger.warning("WAKE_WORD_THRESHOLD=%.2f out of range (0.0-1.0), clamping.", wake_word_threshold)
+            wake_word_threshold = max(0.0, min(1.0, wake_word_threshold))
+        if not 1 <= command_timeout_seconds <= 30:
+            logger.warning("COMMAND_TIMEOUT_SECONDS=%d out of range (1-30), clamping to 8.", command_timeout_seconds)
+            command_timeout_seconds = 8
+        if not 0 <= wake_word_cooldown_ms <= 5000:
+            logger.warning("WAKE_WORD_COOLDOWN_MS=%d out of range (0-5000), clamping to 500.", wake_word_cooldown_ms)
+            wake_word_cooldown_ms = 500
+        if not wake_word:
+            logger.warning("WAKE_WORD empty — using default 'hey nova'")
+            wake_word = "hey nova"
 
         config = cls(
             whisper_model=whisper_model,
@@ -123,9 +149,15 @@ class Config:
             tts_rate=tts_rate,
             tts_volume=tts_volume,
             tts_voice=tts_voice,
+            wake_word_enabled=wake_word_enabled,
+            wake_word=wake_word,
+            wake_word_threshold=wake_word_threshold,
+            command_timeout_seconds=command_timeout_seconds,
+            wake_sound_enabled=wake_sound_enabled,
+            wake_word_cooldown_ms=wake_word_cooldown_ms,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -136,5 +168,11 @@ class Config:
             config.tts_rate,
             config.tts_volume,
             config.tts_voice or "default",
+            config.wake_word,
+            "enabled" if config.wake_word_enabled else "disabled",
+            config.wake_word_threshold,
+            config.command_timeout_seconds,
+            config.wake_word_cooldown_ms,
+            "on" if config.wake_sound_enabled else "off",
         )
         return config
