@@ -22,6 +22,14 @@ AllowedActions = [
     "click",
     "double_click",
     "right_click",
+    # Browser actions Phase 6
+    "search_web",
+    "youtube_search",
+    "browser_back",
+    "browser_forward",
+    "browser_refresh",
+    "browser_scroll",
+    "close_browser",
     # Meta actions (not PC, just responses)
     "unsupported",
     "clarification",
@@ -215,5 +223,41 @@ def validate_action(data: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str,
 
     if action in ("click", "double_click", "right_click"):
         return True, "", {"action": action}
+
+    # Browser actions Phase 6
+    if action == "search_web":
+        query = data.get("query") or data.get("q") or data.get("text")
+        if not isinstance(query, str) or not query.strip():
+            return False, "search_web requires 'query' string", None
+        if len(query) > 300:
+            return False, "search_web query too long (max 300)", None
+        return True, "", {"action": "search_web", "query": query.strip()}
+    if action == "youtube_search":
+        query = data.get("query") or data.get("q") or data.get("text")
+        if not isinstance(query, str) or not query.strip():
+            return False, "youtube_search requires 'query' string", None
+        if len(query) > 200:
+            return False, "youtube_search query too long (max 200)", None
+        return True, "", {"action": "youtube_search", "query": query.strip()}
+    if action in ("browser_back", "browser_forward", "browser_refresh", "close_browser"):
+        return True, "", {"action": action}
+    if action == "browser_scroll":
+        direction = data.get("direction")
+        amount = data.get("amount")
+        if isinstance(direction, str):
+            d = direction.strip().lower()
+            if d == "up":
+                amount = 500 if amount is None else amount
+            elif d == "down":
+                amount = -500 if amount is None else amount
+        if amount is not None:
+            try:
+                amount = int(amount)
+            except Exception:
+                return False, "browser_scroll amount must be int", None
+            if not -2000 <= amount <= 2000:
+                return False, "browser_scroll amount out of range", None
+            return True, "", {"action": "browser_scroll", "amount": amount}
+        return True, "", {"action": "browser_scroll", "amount": -500}
 
     return False, f"Unhandled action '{action}'", None

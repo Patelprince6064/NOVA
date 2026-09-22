@@ -42,6 +42,11 @@ class Config:
     llm_model: str = ""
     llm_api_key: str = ""
     llm_timeout_seconds: int = 10
+    # Browser (Phase 6)
+    browser_enabled: bool = True
+    browser_name: str = "chromium"
+    browser_headless: bool = False
+    browser_timeout_ms: int = 10000
 
     @classmethod
     def load(cls) -> "Config":
@@ -120,6 +125,10 @@ class Config:
         llm_api_key = os.getenv("LLM_API_KEY", "") or ""
         llm_api_key = llm_api_key.strip()
         llm_timeout_seconds = _env_int("LLM_TIMEOUT_SECONDS", 10)
+        browser_enabled = _env_bool("BROWSER_ENABLED", True)
+        browser_name = _env_str("BROWSER_NAME", "chromium").lower().strip()
+        browser_headless = _env_bool("BROWSER_HEADLESS", False)
+        browser_timeout_ms = _env_int("BROWSER_TIMEOUT_MS", 10000)
 
         # Optional language override (e.g., "en")
         lang_raw = os.getenv("WHISPER_LANGUAGE")
@@ -166,6 +175,12 @@ class Config:
         if not 1 <= llm_timeout_seconds <= 60:
             logger.warning("LLM_TIMEOUT_SECONDS=%d out of range (1-60), clamping to 10.", llm_timeout_seconds)
             llm_timeout_seconds = 10
+        if browser_name not in ("chromium", "firefox", "webkit"):
+            logger.warning("BROWSER_NAME %r invalid, using chromium", browser_name)
+            browser_name = "chromium"
+        if not 1000 <= browser_timeout_ms <= 60000:
+            logger.warning("BROWSER_TIMEOUT_MS=%d out of range (1000-60000), clamping to 10000.", browser_timeout_ms)
+            browser_timeout_ms = 10000
 
         config = cls(
             whisper_model=whisper_model,
@@ -192,9 +207,13 @@ class Config:
             llm_model=llm_model,
             llm_api_key=llm_api_key,
             llm_timeout_seconds=llm_timeout_seconds,
+            browser_enabled=browser_enabled,
+            browser_name=browser_name,
+            browser_headless=browser_headless,
+            browser_timeout_ms=browser_timeout_ms,
         )
         logger.info(
-            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d",
+            "Config loaded: model=%s device=%s compute=%s sr=%d max_sec=%d lang=%s tts=%s rate=%d vol=%.2f voice=%r wake=%s(%s) thr=%.2f timeout=%d cooldown=%d sound=%s pc=%s scroll=%d action_timeout=%d llm=%s provider=%s model=%s timeout=%d browser=%s(%s) headless=%s btimeout=%d",
             config.whisper_model,
             config.whisper_device,
             config.whisper_compute_type,
@@ -218,5 +237,9 @@ class Config:
             llm_provider,
             llm_model or "default",
             llm_timeout_seconds,
+            "enabled" if browser_enabled else "disabled",
+            browser_name,
+            "yes" if browser_headless else "no",
+            browser_timeout_ms,
         )
         return config

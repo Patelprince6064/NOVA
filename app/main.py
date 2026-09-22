@@ -1,11 +1,12 @@
-"""Nova Voice Engine — Phase 5 natural language + PC control entry point.
+"""Nova Voice Engine — Phase 6 browser control entry point.
 
 Flow hands-free:
-    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> AI Interpreter
+    Config -> Mic -> Whisper -> TTS -> WakeWordDetector -> PCController -> BrowserController -> AI Interpreter
     -> LISTENING_FOR_WAKE_WORD --"Hey Nova"--> LISTENING_FOR_COMMAND
-    -> PROCESSING (Whisper) -> Fast local router -> LLM (if needed, validated) -> PC action -> SPEAKING -> back
+    -> PROCESSING (Whisper) -> Fast local (browser/pc) -> LLM (validated) -> Browser/PC action -> SPEAKING -> back
 
-Privacy: audio RAM only, LLM only gets transcribed text when needed, no shell/code exec, validated actions only.
+Browser: Playwright reused session, no vision/coordinates, single action per utterance.
+Privacy: audio RAM only, LLM only gets transcribed text, no browser code generation, validated actions only.
 """
 
 import argparse
@@ -39,6 +40,8 @@ from app.tts.speaker import Speaker
 from app.wakeword.detector import WakeWordDetector, WakeWordState
 from app.pc.controller import PCController
 from app.pc.actions import handle_command, execute_structured_action
+from app.browser.controller import BrowserController
+from app.browser.actions import handle_browser_command
 try:
     from app.ai.interpreter import CommandInterpreter
 except ImportError:
@@ -77,23 +80,41 @@ def generate_response(text: str) -> str:
 # Phase 5: Natural language routing helper (fast local + LLM fallback)
 # ---------------------------------------------------------------------------
 
-def route_pc_command(text: str, controller: PCController, interpreter, config) -> str:
-    """Route via fast local router, fallback to LLM if needed.
+def route_pc_command(text: str, controller: PCController, interpreter, config, browser_controller=None) -> str:
+    """Route via fast local router (browser + PC), fallback to LLM if needed.
 
     Architecture:
-        text -> fast handle_command -> if known (PC or friendly) -> done
-        else if LLM enabled & available -> interpreter -> validate -> execute -> response
+        text -> browser fast -> pc fast -> if known -> done
+        else if LLM enabled & available -> interpreter -> validate -> execute via appropriate controller -> response
         else -> original unknown response
 
-    Returns response string to speak.
+    Returns response string to speak. Never generates code/shell.
     """
     if not text or not text.strip():
         return ""
-    # If PC control disabled, fall back to friendly responses only
+    # Browser fast path (reuse session) — before PC to prefer Playwright for website/search
+    if config.browser_enabled and browser_controller is not None:
+        try:
+            handled_b, resp_b = handle_browser_command(text, browser_controller)
+            if handled_b:
+                logger.info("Fast path: Browser action executed -> %r", resp_b)
+                return resp_b
+        except Exception as exc:
+            logger.exception("Browser fast router failed: %s", exc)
+    # If PC control disabled, fall back to friendly responses only (browser already tried)
+    if not config.pc_control_enabled and not (config.browser_enabled and browser_controller):
+        return generate_response(text)
     if not config.pc_control_enabled:
+        # Still allow friendly responses via PC router (without executing)
+        try:
+            handled, fast_resp = handle_command(text, controller)
+            if fast_resp in ("Hello! I'm Nova.", "Hi! I'm ready.", "I'm doing great. I'm ready for your next command.", "Voice system is working correctly."):
+                return fast_resp
+        except Exception:
+            pass
         return generate_response(text)
 
-    # Fast local path — executes PC action if matched
+    # Fast local PC path — executes PC action if matched
     try:
         handled, fast_resp = handle_command(text, controller)
     except Exception as exc:
@@ -124,14 +145,44 @@ def route_pc_command(text: str, controller: PCController, interpreter, config) -
             try:
                 validated, err = interpreter.interpret(text)
                 if validated is not None:
-                    # Dispatch validated action to PC controller
+                    # Dispatch validated action to appropriate controller
                     # validated already includes unsupported/clarification meta
                     if validated.get("action") in ("unsupported", "clarification"):
-                        # For these meta actions, don't execute PC, just respond
+                        # For these meta actions, don't execute, just respond
                         if validated["action"] == "unsupported":
                             return "I can't perform that action yet."
                         else:
                             return validated.get("message", "Which option should I use?")
+                    # Browser actions via BrowserController when available
+                    browser_actions = {"search_web", "youtube_search", "browser_back", "browser_forward", "browser_refresh", "browser_scroll", "close_browser", "open_url"}
+                    action = validated.get("action", "")
+                    if browser_controller is not None and config.browser_enabled and action in browser_actions:
+                        # Map validated browser action to BrowserController
+                        try:
+                            if action == "open_url":
+                                target = validated.get("website") or validated.get("url") or ""
+                                ok, msg = browser_controller.open_url(target)
+                            elif action == "search_web":
+                                ok, msg = browser_controller.search_web(validated.get("query", ""))
+                            elif action == "youtube_search":
+                                ok, msg = browser_controller.youtube_search(validated.get("query", ""))
+                            elif action == "browser_back":
+                                ok, msg = browser_controller.go_back()
+                            elif action == "browser_forward":
+                                ok, msg = browser_controller.go_forward()
+                            elif action == "browser_refresh":
+                                ok, msg = browser_controller.refresh()
+                            elif action == "browser_scroll":
+                                ok, msg = browser_controller.scroll(validated.get("amount", -500))
+                            elif action == "close_browser":
+                                ok, msg = browser_controller.close_browser()
+                            else:
+                                ok, msg = False, "I couldn't understand that command."
+                            logger.info("LLM path browser executed: %r -> %r", validated, msg)
+                            return msg
+                        except Exception as exc:
+                            logger.exception("LLM browser execution failed: %s", exc)
+                            return "I couldn't perform that action."
                     ok, msg = execute_structured_action(validated, controller)
                     logger.info("LLM path executed: %r -> %r", validated, msg)
                     return msg
@@ -485,6 +536,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
     wake_status = "DISABLED" if not config.wake_word_enabled else f"READY (\"{config.wake_word}\")"
     pc_status = "ENABLED" if config.pc_control_enabled else "DISABLED"
     llm_status = "ENABLED" if config.llm_enabled and config.llm_api_key else ("DISABLED (no key)" if config.llm_enabled else "DISABLED")
+    browser_status = "ENABLED" if config.browser_enabled else "DISABLED"
     print("=" * 32)
     print("        NOVA VOICE ENGINE")
     print("=" * 32)
@@ -496,6 +548,7 @@ def print_banner(config: Config, selected: Optional[MicInfo], speaker: Optional[
         print(f"   Threshold: {config.wake_word_threshold}  Cooldown: {config.wake_word_cooldown_ms}ms  Timeout: {config.command_timeout_seconds}s")
     print(f"🖥️  PC control: {pc_status} (scroll={config.default_scroll_amount} timeout={config.action_timeout_seconds}s)")
     print(f"🧠 Natural language: {llm_status} (provider={config.llm_provider} model={config.llm_model or 'default'})")
+    print(f"🌐 Browser: {browser_status} ({config.browser_name} headless={config.browser_headless} timeout={config.browser_timeout_ms}ms)")
     print(f"Sample Rate: {config.sample_rate} Hz")
     print(f"Mode: {mode}")
     print("\nStatus: READY")
@@ -511,13 +564,13 @@ def main() -> None:
     parser.add_argument("--help", action="store_true", help="Show help")
     args, _unknown = parser.parse_known_args()
     if args.help:
-        print("Nova Voice Engine — Phase 5")
-        print("  python -m app.main          # hands-free wake-word + natural language (default)")
+        print("Nova Voice Engine — Phase 6")
+        print("  python -m app.main          # hands-free wake-word + browser control (default)")
         print("  python -m app.main --manual # manual ENTER mode")
         print("  python -m app.main --help   # this help")
         print("")
-        print("Examples: 'open Brave' | 'Could you launch my Brave browser?'")
-        print("  'open YouTube' | 'Take me to YouTube' | 'type Hello World' | 'press Control C'")
+        print("Examples: 'open YouTube' | 'search YouTube for Arijit Singh' | 'search Google for Python tutorials'")
+        print("  'open Brave' | 'go back' | 'scroll down' | 'close the browser' | 'press Control C'")
         sys.exit(0)
 
     logger.info("Nova Voice Engine starting...")
@@ -636,6 +689,28 @@ def main() -> None:
     else:
         print("Natural language: Local only (LLM_ENABLED=false) — fast router active.\n")
         logger.info("LLM disabled, using fast local router only")
+
+    # ---- Initialize Browser controller (Phase 6) ----
+    browser_controller = BrowserController(
+        enabled=config.browser_enabled,
+        browser_name=config.browser_name,
+        headless=config.browser_headless,
+        timeout_ms=config.browser_timeout_ms,
+    )
+    if config.browser_enabled:
+        print(f"Browser control: Enabled ({config.browser_name}, headless={config.browser_headless})\n")
+        logger.info("BrowserController initialized: %s headless=%s", config.browser_name, config.browser_headless)
+        # Check playwright availability
+        try:
+            from playwright.sync_api import sync_playwright as _sp  # noqa
+            print("Playwright: Available\n")
+        except ImportError:
+            print("WARNING: Playwright not installed. Browser actions will fail.")
+            print("Install: pip install playwright && playwright install chromium\n")
+            logger.warning("Playwright not installed")
+    else:
+        print("Browser control: Disabled (BROWSER_ENABLED=false)\n")
+        logger.info("Browser control disabled by config")
 
     print_banner(config, selected, speaker, mode_str)
 
@@ -809,10 +884,10 @@ def main() -> None:
                         print(f'  "{text}"')
                         logger.info("Transcription: %r (hands-free)", text[:120])
 
-                    # ---- SPEAKING (Phase 5: fast local + LLM) ----
+                    # ---- SPEAKING (Phase 6: browser/pc + LLM) ----
                     state = WakeWordState.SPEAKING
                     try:
-                        response = route_pc_command(text, pc_controller, interpreter, config)
+                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller)
                     except Exception as exc:
                         logger.exception("Route failed: %s", exc)
                         response = "I couldn't process that command right now."
@@ -929,10 +1004,10 @@ def main() -> None:
                 else:
                     print("📝 You said:\n")
                     print(f'  "{text}"')
-                # Route via Phase 5 helper (fast + LLM)
+                # Route via Phase 6 helper (browser + pc fast + LLM)
                 if text and text.strip():
                     try:
-                        response = route_pc_command(text, pc_controller, interpreter, config)
+                        response = route_pc_command(text, pc_controller, interpreter, config, browser_controller)
                     except Exception as exc:
                         logger.exception("Route failed: %s", exc)
                         response = "I couldn't process that command right now."
@@ -953,6 +1028,14 @@ def main() -> None:
 
     # ---- Common clean shutdown ----
     logger.info("Shutting down Nova...")
+    try:
+        if 'browser_controller' in locals() and browser_controller is not None:
+            try:
+                browser_controller.close_browser()
+            except Exception as exc:
+                logger.warning("Browser shutdown error: %s", exc)
+    except Exception:
+        pass
     try:
         if 'speaker' in locals() and speaker is not None:
             try:
