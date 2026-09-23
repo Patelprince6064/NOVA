@@ -9,17 +9,17 @@ const steps = [
 
 export default function HowItWorks() {
   return (
-    <section id="how-it-works" className="py-16 lg:py-24">
+    <section id="how-it-works" className="py-16 lg:py-24 bg-white">
       <div className="max-w-[1200px] mx-auto px-6 lg:px-8">
-        <h2 className="text-center font-display text-[32px] lg:text-[40px] font-semibold tracking-[-0.03em] text-white">How Nova works</h2>
+        <h2 className="text-center font-display text-[32px] lg:text-[40px] font-semibold tracking-[-0.03em] text-gray-900">How Nova works</h2>
         <div className="relative mt-10 lg:mt-14">
-          <div className="hidden lg:block absolute top-[34px] left-[8%] right-[8%] h-[1px] bg-gradient-to-r from-transparent via-blue-500/30 to-transparent" />
+          <div className="hidden lg:block absolute top-[34px] left-[8%] right-[8%] h-[1px] bg-gradient-to-r from-transparent via-gray-200 to-transparent" />
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {steps.map((s,i)=>(
-              <motion.div key={s.n} initial={{opacity:0,y:12}} whileInView={{opacity:1,y:0}} viewport={{once:true}} transition={{delay:i*0.08}} className="relative rounded-2xl bg-white/[0.03] border border-white/[0.06] p-6">
-                <div className="w-8 h-8 rounded-full bg-white text-[#05070B] grid place-items-center text-[12px] font-bold">{s.n}</div>
-                <h3 className="mt-4 text-[15px] font-semibold text-white">{s.t}</h3>
-                <p className="mt-2 text-[13px] leading-relaxed text-white/45">{s.d}</p>
+              <motion.div key={s.n} initial={{opacity:0,y:12}} whileInView={{opacity:1,y:0}} viewport={{once:true}} transition={{delay:i*0.08}} className="relative rounded-2xl bg-white border border-gray-200 p-6 shadow-sm">
+                <div className="w-8 h-8 rounded-full bg-gray-900 text-white grid place-items-center text-[12px] font-bold">{s.n}</div>
+                <h3 className="mt-4 text-[15px] font-semibold text-gray-900">{s.t}</h3>
+                <p className="mt-2 text-[13px] leading-relaxed text-gray-500">{s.d}</p>
               </motion.div>
             ))}
           </div>

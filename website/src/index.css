@@ -1,18 +1,18 @@
 @import "tailwindcss";
 
 @theme {
-  --color-nova-bg: #05070B;
-  --color-nova-text: #F5F7FA;
-  --color-nova-muted: #9CA7B8;
-  --color-nova-border: rgba(255,255,255,0.08);
-  --color-nova-accent: #3B82F6;
+  --color-nova-bg: #FFFFFF;
+  --color-nova-text: #0A0A0A;
+  --color-nova-muted: #6B7280;
+  --color-nova-border: #E5E7EB;
+  --color-nova-accent: #111827;
   --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --font-display: "Manrope", "Inter", sans-serif;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
+  scrollbar-color: rgba(0,0,0,0.12) transparent;
 }
 
 html {
@@ -20,8 +20,8 @@ html {
 }
 
 body {
-  background: #05070B;
-  color: #F5F7FA;
+  background: #FFFFFF;
+  color: #111827;
   font-family: "Inter", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -29,34 +29,34 @@ body {
 }
 
 ::selection {
-  background: rgba(59,130,246,0.3);
+  background: rgba(17,24,39,0.08);
 }
 
-/* subtle grid */
+/* subtle light grid - infina minimal */
 .bg-grid {
   background-image: 
-    radial-gradient(ellipse 800px 600px at 50% -10%, rgba(59,130,246,0.12), transparent 60%),
-    radial-gradient(ellipse 600px 400px at 80% 20%, rgba(59,130,246,0.06), transparent 60%),
-    linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+    radial-gradient(ellipse 900px 600px at 50% -10%, rgba(17,24,39,0.04), transparent 60%),
+    radial-gradient(ellipse 700px 500px at 80% 10%, rgba(59,130,246,0.04), transparent 60%),
+    linear-gradient(rgba(0,0,0,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,0.02) 1px, transparent 1px);
   background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
 }
 
-/* glass */
+/* glass light */
 .glass {
-  background: rgba(255,255,255,0.03);
+  background: rgba(255,255,255,0.85);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid rgba(0,0,0,0.06);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
 }
 
 .glass-hover:hover {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.95);
+  border-color: rgba(0,0,0,0.08);
 }
 
-/* focus */
 :focus-visible {
-  outline: 2px solid #3B82F6;
+  outline: 2px solid #111827;
   outline-offset: 2px;
 }
 
