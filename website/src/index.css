@@ -66,30 +66,3 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
-
-/* Infina v3 theme variables */
-[data-v3-theme="light"] {
-  --v3-bg: #ffffff;
-  --v3-bg-raised: #f5f5f7;
-  --v3-panel: #ffffff;
-  --v3-panel-soft: #f5f5f7;
-  --v3-border: #d2d2d7;
-  --v3-border-soft: #e8e8ed;
-  --v3-ink: #1d1d1f;
-  --v3-ink-dim: #424245;
-  --v3-muted: #6e6e73;
-  --v3-faint: #86868b;
-  --v3-accent: #1d1d1f;
-  --v3-accent-strong: #000000;
-  --v3-window-shadow: 0 24px 60px -24px rgba(0,0,0,0.25);
-  --v3-hero-grad: linear-gradient(180deg, #a3c6e5 0%, #cfe2f3 55%, #ffffff 100%);
-  --v3-final-grad: linear-gradient(0deg, #a3c6e5 0%, #d3e5f4 55%, #ffffff 100%);
-  --v3-nav-bg: rgba(255,255,255,0.55);
-  --v3-nav-bg-scrolled: rgba(255,255,255,0.82);
-}
-.v3-hero-grad { background: var(--v3-hero-grad); }
-.v3-panel { background: var(--v3-panel); border: 1px solid var(--v3-border-soft); }
-@keyframes marquee { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
-.animate-marquee { animation: marquee 38s linear infinite; }
-.mask-marquee { mask-image: linear-gradient(90deg, transparent, black 8%, black 92%, transparent); }
-.window-shadow { box-shadow: var(--v3-window-shadow); }
