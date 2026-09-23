@@ -30,6 +30,7 @@ class Config:
     sample_rate: int = 16000
     max_recording_seconds: int = 15
     language: str | None = None  # None = auto-detect
+    whisper_initial_prompt: str = "play open youtube google song music brave chrome"
     # TTS settings
     tts_enabled: bool = True
     tts_rate: int = 175
@@ -225,9 +226,11 @@ class Config:
         stt_timeout_seconds = _env_int("STT_TIMEOUT_SECONDS", 8)
         task_timeout_seconds = _env_int("TASK_TIMEOUT_SECONDS", 60)
 
-        # Optional language override (e.g., "en")
+        # Optional language override (e.g., "en") - force en for simple English
         lang_raw = os.getenv("WHISPER_LANGUAGE")
         language = lang_raw.strip() if lang_raw and lang_raw.strip() else None
+        # Initial prompt helps Whisper with simple English command vocabulary (Indian accent)
+        whisper_initial_prompt = os.getenv("WHISPER_INITIAL_PROMPT", "play open youtube google song music brave chrome").strip() if os.getenv("WHISPER_INITIAL_PROMPT") else "play open youtube google song music brave chrome"
 
         # Clamp sample rate and duration to sane ranges
         if sample_rate not in (8000, 16000, 22050, 44100, 48000):
@@ -369,6 +372,7 @@ class Config:
             sample_rate=sample_rate,
             max_recording_seconds=max_recording_seconds,
             language=language,
+            whisper_initial_prompt=whisper_initial_prompt,
             tts_enabled=tts_enabled,
             tts_rate=tts_rate,
             tts_volume=tts_volume,

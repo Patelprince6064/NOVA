@@ -63,72 +63,75 @@ def handle_browser_command(text: str, controller: BrowserController) -> Tuple[bo
             return True, msg
         # else not handled, fall through to pc scroll
 
-    # YouTube search — specific patterns
-    # "search youtube for X", "find X on youtube", "look up X on youtube", "youtube search X"
-    m = re.match(r"^(?:search|find|look\s*up)\s+(?:youtube\s+for\s+)?(.+?)(?:\s+on\s+youtube)?$", norm)
-    # Need to differentiate generic search vs youtube search
-    # Check youtube search explicitly first
-    youtube_patterns = [
-        r"^(?:search\s+youtube\s+for|search\s+youtube|youtube\s+search)\s+(.+)$",
-        r"^(?:find|look\s*up)\s+(.+)\s+on\s+youtube$",
-        r"^(?:search\s+for\s+)?(.+)\s+on\s+youtube$",
-    ]
-    for pat in youtube_patterns:
-        mm = re.match(pat, norm)
-        if mm:
-            query = mm.group(1).strip().rstrip(" .")
-            if query and query not in ("youtube",):
-                ok, msg = controller.youtube_search(query)
+    # YouTube / Google search — DELEGATED TO BRAVE (PC) per user request
+    # Image 1 is Playwright chromium overlay (small window), Image 2 is real Brave (full window).
+    # User wants ALL searches/YouTube in Brave (Image 2), not overlay. So we intentionally
+    # do NOT handle search here — return False to let PCController.open_url (Brave) handle it.
+    # This prevents the small white Playwright window from ever opening for searches.
+    # Keep this block disabled; PC actions handles youtube_search/google_search via Brave URLs.
+    if False:  # placeholder to keep logic visible but disabled
+        m = re.match(r"^(?:search|find|look\s*up)\s+(?:youtube\s+for\s+)?(.+?)(?:\s+on\s+youtube)?$", norm)
+        youtube_patterns = [
+            r"^(?:search\s+youtube\s+for|search\s+youtube|youtube\s+search)\s+(.+)$",
+            r"^(?:find|look\s*up)\s+(.+)\s+on\s+youtube$",
+            r"^(?:search\s+for\s+)?(.+)\s+on\s+youtube$",
+        ]
+        for pat in youtube_patterns:
+            mm = re.match(pat, norm)
+            if mm:
+                query = mm.group(1).strip().rstrip(" .")
+                if query and query not in ("youtube",):
+                    ok, msg = controller.youtube_search(query)
+                    return True, msg
+        if norm.startswith("search youtube for "):
+            q = norm[len("search youtube for "):].strip()
+            if q:
+                ok, msg = controller.youtube_search(q)
                 return True, msg
-
-    # Also handle "search youtube for X" where X may be pre-extracted above but need to ensure
-    if norm.startswith("search youtube for "):
-        q = norm[len("search youtube for "):].strip()
-        if q:
-            ok, msg = controller.youtube_search(q)
-            return True, msg
-    if norm.startswith("search youtube "):
-        q = norm[len("search youtube "):].strip()
-        if q:
-            ok, msg = controller.youtube_search(q)
-            return True, msg
-
-    # Google search — "search google for X", "google X", "search for X", "look up X"
-    # Need to avoid catching youtube search already handled
-    if "youtube" in norm:
-        # already handled youtube above, if still here, treat as not handled
-        pass
-    else:
-        m_google = None
-        # "search google for X"
-        mm = re.match(r"^search\s+google\s+for\s+(.+)$", norm)
-        if mm:
-            q = mm.group(1).strip()
-            ok, msg = controller.search_web(q)
-            return True, msg
-        # "google X" (short)
-        mm = re.match(r"^google\s+(.+)$", norm)
-        if mm:
-            q = mm.group(1).strip()
-            # Avoid "google" alone
-            if q and len(q) > 2:
+        if norm.startswith("search youtube "):
+            q = norm[len("search youtube "):].strip()
+            if q:
+                ok, msg = controller.youtube_search(q)
+                return True, msg
+        if "youtube" in norm:
+            pass
+        else:
+            mm = re.match(r"^search\s+google\s+for\s+(.+)$", norm)
+            if mm:
+                q = mm.group(1).strip()
                 ok, msg = controller.search_web(q)
                 return True, msg
-        # "search for X" or "search X" — generic web search via google
-        mm = re.match(r"^search\s+(?:for\s+)?(.+)$", norm)
-        if mm:
-            q = mm.group(1).strip()
-            # Exclude youtube case already handled, also exclude if q is app-like "brave"
-            # But for Phase 6, generic search via google is ok for non-youtube
-            # To avoid intercepting "search" alone, require query length
-            if q and len(q) > 1 and "youtube" not in q:
-                # Don't intercept "search" that was meant as pc? But generic search is browser action
-                # Let it be browser search
-                ok, msg = controller.search_web(q)
-                return True, msg
+            mm = re.match(r"^google\s+(.+)$", norm)
+            if mm:
+                q = mm.group(1).strip()
+                if q and len(q) > 2:
+                    ok, msg = controller.search_web(q)
+                    return True, msg
+            mm = re.match(r"^search\s+(?:for\s+)?(.+)$", norm)
+            if mm:
+                q = mm.group(1).strip()
+                if q and len(q) > 1 and "youtube" not in q:
+                    ok, msg = controller.search_web(q)
+                    return True, msg
+    # Delegation: let PC handle search -> Brave
+    # Check if norm looks like a search/youtube query, delegate
+    youtube_search_indicators = ("search youtube", "youtube search", " on youtube", "play ")
+    google_search_indicators = ("search google", "google ")
+    search_generic = norm.startswith("search ")
+    if any(x in norm for x in youtube_search_indicators) or (search_generic and "youtube" not in norm and len(norm.split()) > 1):
+        # Don't handle here — PC will open Brave search URL
+        return False, ""
+    if any(x in norm for x in google_search_indicators) or (search_generic):
+        # Also delegate generic search to PC/Brave
+        # But keep Playwright for non-search browser nav (back/forward etc)
+        # Quick check: if search pattern, delegate
+        if re.match(r"^search\s+(?:for\s+)?.+", norm) or re.match(r"^google\s+.+", norm):
+            return False, ""
 
     # Open website via browser (reuse website aliases, but via BrowserController)
-    # "open youtube", "go to youtube", "launch youtube" etc.
+    # NOTE: "open youtube" is intentionally NOT handled here — it is routed to
+    # PCController.open_url which opens in Brave per user request.
+    # Other sites still use BrowserController; youtube is delegated to Brave.
     website_triggers = ("open ", "launch ", "start ", "run ", "go to ", "goto ", "take me to ", "bring up ")
     for trig in website_triggers:
         if norm.startswith(trig):
@@ -145,10 +148,16 @@ def handle_browser_command(text: str, controller: BrowserController) -> Tuple[bo
                         matched = alias
                         break
             if is_website:
+                # Delegate youtube to Brave (PC controller)
+                website_key = (matched or target).strip().lower()
+                if website_key == "youtube" or website_key.startswith("youtube "):
+                    return False, ""
                 ok, msg = controller.open_url(matched or target)
                 return True, msg
             break
     if norm in WEBSITE_ALIASES:
+        if norm == "youtube":
+            return False, ""  # let PC/Brave handle it
         ok, msg = controller.open_url(norm)
         return True, msg
 

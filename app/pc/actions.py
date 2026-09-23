@@ -10,9 +10,11 @@ Never: os.system(user_text) or subprocess with shell user text.
 
 import logging
 import re
+import urllib.parse
 from typing import Tuple, Optional
 
 from app.pc.controller import PCController, WEBSITE_ALIASES, APPLICATION_ALIASES
+from app.browser.sites import youtube_search_url, google_search_url
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,12 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
         return False, ""
 
     logger.info("Routing command: raw=%r norm=%r", raw[:120], norm[:120])
+
+    # Accent fix: whisper mishears "open brave" as "oh one room"/"open rail" (Indian accent)
+    if norm in ("oh, one room", "oh one room", "oh, one room.", "o one room", "open one room"):
+        logger.info("Accent fix: '%s' -> open brave", norm)
+        norm = "open brave"
+        raw = "open brave"
 
     # Multi-step guard
     if _detect_multi_action(norm):
@@ -205,39 +213,86 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
         ok, msg = controller.right_click()
         return True, msg
 
-    # 6. OPEN WEBSITE — check website aliases before app (youtube etc)
-    # Patterns: open youtube, go to youtube, launch youtube, open github etc.
-    website_triggers = ("open ", "launch ", "start ", "run ", "go to ", "goto ")
-    for trig in website_triggers:
-        if norm.startswith(trig):
-            target = norm[len(trig):].strip().rstrip(" .")
-            # Check website alias with word boundaries (avoid single-char alias false positives like 'x' in 'explorer')
-            is_website = False
-            matched_alias = None
-            if target in WEBSITE_ALIASES:
-                is_website = True
-                matched_alias = target
-            else:
-                for alias in WEBSITE_ALIASES:
-                    # word-boundary check: alias as whole word in target
-                    if alias == target or target.startswith(alias + " ") or target.endswith(" " + alias) or f" {alias} " in f" {target} ":
-                        is_website = True
-                        matched_alias = alias
-                        break
-            if is_website:
-                ok, msg = controller.open_url(matched_alias or target)
+    # 5b. SEARCH IN BRAVE — handle search/youtube before open (per user: Image 2 Brave, not Image 1 small overlay)
+    # All youtube/google searches should open in Brave, not Playwright overlay.
+    # "search youtube for X", "find X on youtube", "play X", "search X"
+    # Delegate "play ... on youtube" and generic "play ... song" to agent (multi-step search + click) — don't handle as single search
+    if norm.startswith("play ") and "youtube" in norm:
+        # e.g., "play daylight song on new youtube" -> let agent do search + play first video
+        return False, ""
+    # Also delegate any "search ... and play ..." combined request to agent
+    if "play" in norm and "youtube" in norm and "search" in norm:
+        return False, ""
+    # SIMPLE ENGLISH: any "play <name>" -> delegate to agent for YouTube search+play (so "play guman" works)
+    if norm.startswith("play ") and len(norm.split()) >= 2:
+        return False, ""
+    # Generic play song without explicit youtube should also play in YouTube (Image: Play the delay song)
+    if norm.startswith("play ") and ("song" in norm or "music" in norm):
+        return False, ""
+    youtube_patterns = [
+        r"^(?:search\s+youtube\s+for|search\s+youtube|youtube\s+search)\s+(.+)$",
+        r"^(?:find|look\s*up)\s+(.+)\s+on\s+(?:new\s+)?youtube$",
+        r"^(?:search\s+for\s+)?(.+?)\s+on\s+(?:new\s+)?youtube$",
+        r"^play\s+(.+?)(?:\s+on\s+(?:new\s+)?youtube)?$",
+    ]
+    for pat in youtube_patterns:
+        mm = re.match(pat, norm)
+        if mm:
+            query = mm.group(1).strip().rstrip(" .")
+            # Clean trailing filler like "on new", "song on new" already handled, strip "on new"
+            query = re.sub(r"\s+on\s+new\s*$", "", query, flags=re.IGNORECASE).strip()
+            query = re.sub(r"\s+new\s*$", "", query, flags=re.IGNORECASE).strip()
+            if query and query not in ("youtube",) and len(query) > 1:
+                # Avoid false positive where query is app-like
+                # e.g., "play youtube" alone is already handled as open
+                if query.lower() in WEBSITE_ALIASES:
+                    continue
+                # Clean query that still contains leading "play " or trailing "song on new youtube"
+                if query.lower().startswith("play "):
+                    query = query[5:].strip()
+                url = youtube_search_url(query)
+                ok, msg = controller.open_url(url)
                 return True, msg
-            # Break after first website check — continue to app check if not website
-            break
+    # Also direct "search youtube for X" explicit
+    if norm.startswith("search youtube for "):
+        q = norm[len("search youtube for "):].strip()
+        if q:
+            url = youtube_search_url(q)
+            ok, msg = controller.open_url(url)
+            return True, msg
+    if norm.startswith("search youtube "):
+        q = norm[len("search youtube "):].strip()
+        if q:
+            url = youtube_search_url(q)
+            ok, msg = controller.open_url(url)
+            return True, msg
+    # Google / generic search -> Brave Google
+    if "youtube" not in norm:
+        mm = re.match(r"^search\s+google\s+for\s+(.+)$", norm)
+        if mm:
+            q = mm.group(1).strip()
+            url = google_search_url(q)
+            ok, msg = controller.open_url(url)
+            return True, msg
+        mm = re.match(r"^google\s+(.+)$", norm)
+        if mm:
+            q = mm.group(1).strip()
+            if q and len(q) > 2:
+                url = google_search_url(q)
+                ok, msg = controller.open_url(url)
+                return True, msg
+        mm = re.match(r"^search\s+(?:for\s+)?(.+)$", norm)
+        if mm:
+            q = mm.group(1).strip()
+            if q and len(q) > 1 and "youtube" not in q:
+                # Don't handle "search brave" etc.
+                if q.lower() not in APPLICATION_ALIASES and q.lower() not in WEBSITE_ALIASES:
+                    url = google_search_url(q)
+                    ok, msg = controller.open_url(url)
+                    return True, msg
 
-    # Also handle bare "open youtube" without trigger? Already handled above
-    # Check if norm itself is website alias with open implied?
-    if norm in WEBSITE_ALIASES:
-        ok, msg = controller.open_url(norm)
-        return True, msg
-
-    # 7. OPEN APPLICATION — open/launch/start/run <app>
-    # Allow "open brave", "launch notepad", etc.
+    # 6. OPEN APPLICATION — check app FIRST so "open spotify/vlc/word" opens desktop app (simple English)
+    # All application open commands — expanded allowlist in controller.py
     for trig in ("open ", "launch ", "start ", "run ", "go to "):
         if norm.startswith(trig):
             target = norm[len(trig):].strip().rstrip(" .")
@@ -245,42 +300,70 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
             if target in ("browser", "my browser", "the browser", "my browser please", "the browser please"):
                 logger.info("Ambiguous browser request: %r -> defer to LLM/clarification", target)
                 return False, "I can't perform that action yet."
-            # Try website first already done, now app
-            # Normalize target for app aliases (brave browser etc)
+            # Direct alias match
             if target in APPLICATION_ALIASES:
                 ok, msg = controller.open_application(target)
                 return True, msg
-            # Check if target contains alias substring (word-aware)
+            # Word-boundary alias match (handles "spotify app", "vlc player")
             for alias in APPLICATION_ALIASES:
                 if alias == target or target == alias:
                     ok, msg = controller.open_application(alias)
                     return True, msg
-                # word boundary: alias as whole word in target
                 if alias in target and (alias in target.split() or f" {alias} " in f" {target} " or target.startswith(alias + " ") or target.endswith(" " + alias)):
                     ok, msg = controller.open_application(alias)
                     if ok or "don't know" not in msg:
                         return True, msg
-            # Also handle case where target is within alias (e.g., "vs code" alias contains "code"? Already covered)
+            # Reverse match: target is substring of alias (e.g., "code" -> "vs code")
             for alias in APPLICATION_ALIASES:
                 if target in alias and len(target.split()) == 1 and len(alias.split()) <= 2:
-                    # e.g., target "code" -> alias "vs code"
                     if alias.endswith(" " + target) or alias == target:
                         ok, msg = controller.open_application(alias)
                         return True, msg
-            # If not alias, but maybe user said open url like open google.com -> handled as website below?
-            # Try as URL fallback
+            # If looks like URL, prefer website fallback below — don't return yet, break to website check
             if "." in target or target.startswith("http"):
-                ok, msg = controller.open_url(target)
-                if ok:
-                    return True, msg
-            # Unknown app
-            # Only return if target looked like app intent (open X)
-            # To avoid false positives for "open something complicated", return unknown app response
-            # Check if target is plausible app word (single word or two words)
-            if 1 <= len(target.split()) <= 3:
-                # Try as app anyway — controller will give not-found msg
-                ok, msg = controller.open_application(target)
+                # Defer to website open below
+                break
+            # Plausible app name (1-3 words) — try generic controller fallback (opens any installed app)
+            if 1 <= len(target.split()) <= 4:
+                # Only try as app if not obviously a website phrase
+                if target not in WEBSITE_ALIASES and not any(target == w or target.startswith(w + " ") for w in WEBSITE_ALIASES):
+                    ok, msg = controller.open_application(target)
+                    # If controller could handle (generic fallback), return it
+                    if ok or "don't know" not in msg:
+                        return True, msg
+            # No app match — fall through to website check
+            break
+
+    # 7. OPEN WEBSITE — fallback if not handled as app (youtube, google, etc.)
+    website_triggers = ("open ", "launch ", "start ", "run ", "go to ", "goto ")
+    for trig in website_triggers:
+        if norm.startswith(trig):
+            target = norm[len(trig):].strip().rstrip(" .")
+            is_website = False
+            matched_alias = None
+            if target in WEBSITE_ALIASES:
+                is_website = True
+                matched_alias = target
+            else:
+                for alias in WEBSITE_ALIASES:
+                    if alias == target or target.startswith(alias + " ") or target.endswith(" " + alias) or f" {alias} " in f" {target} ":
+                        is_website = True
+                        matched_alias = alias
+                        break
+            if is_website:
+                ok, msg = controller.open_url(matched_alias or target)
                 return True, msg
+            break
+    # Bare website alias without trigger (e.g., just "youtube")
+    if norm in WEBSITE_ALIASES:
+        # Only if not already handled as app (e.g., spotify app vs website)
+        if norm not in APPLICATION_ALIASES:
+            ok, msg = controller.open_url(norm)
+            return True, msg
+        # If alias exists in both, prefer app for bare word? For youtube bare still website
+        if norm in ("youtube", "google", "github", "gmail"):
+            ok, msg = controller.open_url(norm)
+            return True, msg
 
     # 8. Also handle "open <url>" without website mapping but looks like domain
     if norm.startswith("open ") and ("." in norm or "http" in norm):

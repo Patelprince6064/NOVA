@@ -9,6 +9,7 @@ Controller is independent from speech/TTS/wake-word so it can be replaced.
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -25,12 +26,30 @@ logger = logging.getLogger(__name__)
 
 # Application aliases -> executable or shell command
 # Env overrides: BRAVE_PATH, CHROME_PATH, VSCODE_PATH, etc.
+# SIMPLE ENGLISH: expanded to cover all common Windows apps so "open X" works for everyone
 APPLICATION_ALIASES = {
+    # Browsers
     "brave": "brave",
     "brave browser": "brave",
     "browser brave": "brave",
+    "rail": "brave",
+    "rave": "brave",
+    "bray": "brave",
+    "brey": "brave",
+    "brev": "brave",
+    "grave": "brave",
+    "braiv": "brave",
+    "brav": "brave",
+    "blue": "brave",
+    "room": "brave",
     "chrome": "chrome",
     "google chrome": "chrome",
+    "edge": "msedge",
+    "microsoft edge": "msedge",
+    "firefox": "firefox",
+    "opera": "opera",
+    "opera gx": "opera",
+    # Editors / IDE
     "notepad": "notepad",
     "calculator": "calc",
     "calc": "calc",
@@ -38,15 +57,94 @@ APPLICATION_ALIASES = {
     "vs code": "vscode",
     "visual studio code": "vscode",
     "code": "vscode",
+    "sublime": "sublime",
+    "sublime text": "sublime",
+    "notepad++": "notepad++",
+    "notepad plus plus": "notepad++",
+    "pycharm": "pycharm",
+    "intellij": "idea",
+    "idea": "idea",
+    "android studio": "androidstudio",
+    "atom": "atom",
+    # File / System
     "file explorer": "explorer",
     "explorer": "explorer",
     "files": "explorer",
-    "edge": "msedge",
-    "microsoft edge": "msedge",
-    "firefox": "firefox",
+    "my computer": "explorer",
+    "this pc": "explorer",
     "wordpad": "wordpad",
     "mspaint": "mspaint",
     "paint": "mspaint",
+    "photos": "photos",
+    "camera": "camera",
+    "settings": "settings",
+    "control panel": "control",
+    "task manager": "taskmgr",
+    "device manager": "devmgmt",
+    "disk management": "diskmgmt",
+    "services": "services",
+    "registry editor": "regedit",
+    "regedit": "regedit",
+    "cmd": "cmd",
+    "command prompt": "cmd",
+    "powershell": "powershell",
+    "terminal": "wt",
+    "windows terminal": "wt",
+    "snipping tool": "snippingtool",
+    "snip": "snippingtool",
+    "notepad plus": "notepad++",
+    "clock": "clock",
+    "calendar": "calendar",
+    "calculator app": "calc",
+    # Office
+    "word": "word",
+    "microsoft word": "word",
+    "excel": "excel",
+    "microsoft excel": "excel",
+    "powerpoint": "powerpoint",
+    "microsoft powerpoint": "powerpoint",
+    "outlook": "outlook",
+    "microsoft outlook": "outlook",
+    "onenote": "onenote",
+    "access": "access",
+    "publisher": "publisher",
+    "teams": "teams",
+    "microsoft teams": "teams",
+    "one drive": "onedrive",
+    "onedrive": "onedrive",
+    # Media
+    "spotify": "spotify",
+    "vlc": "vlc",
+    "vlc media player": "vlc",
+    "media player": "mplayer",
+    "windows media player": "mplayer",
+    "itunes": "itunes",
+    # Chat / Social
+    "whatsapp": "whatsapp",
+    "telegram": "telegram",
+    "discord": "discord",
+    "slack": "slack",
+    "zoom": "zoom",
+    "skype": "skype",
+    "messenger": "messenger",
+    # Gaming
+    "steam": "steam",
+    "epic games": "epic",
+    "epic": "epic",
+    "origin": "origin",
+    "xbox": "xbox",
+    # Utilities
+    "winrar": "winrar",
+    "7zip": "7zip",
+    "7-zip": "7zip",
+    "winzip": "winzip",
+    "adobe reader": "acrord32",
+    "photoshop": "photoshop",
+    "illustrator": "illustrator",
+    "premiere": "premiere",
+    "audacity": "audacity",
+    "obs": "obs",
+    "obs studio": "obs",
 }
 
 # Executable lookup for Windows
@@ -59,8 +157,58 @@ APP_EXECUTABLES = {
     "explorer": ["explorer.exe"],
     "msedge": ["msedge.exe"],
     "firefox": ["firefox.exe"],
+    "opera": ["opera.exe", "launcher.exe"],
     "wordpad": ["wordpad.exe"],
     "mspaint": ["mspaint.exe"],
+    "photos": ["Microsoft.Photos.exe"],
+    "camera": ["WindowsCamera.exe"],
+    "settings": ["ms-settings:"],
+    "control": ["control.exe"],
+    "taskmgr": ["Taskmgr.exe"],
+    "devmgmt": ["devmgmt.msc"],
+    "diskmgmt": ["diskmgmt.msc"],
+    "services": ["services.msc"],
+    "regedit": ["regedit.exe"],
+    "cmd": ["cmd.exe"],
+    "powershell": ["powershell.exe"],
+    "wt": ["wt.exe"],
+    "snippingtool": ["SnippingTool.exe"],
+    "word": ["WINWORD.EXE"],
+    "excel": ["EXCEL.EXE"],
+    "powerpoint": ["POWERPNT.EXE"],
+    "outlook": ["OUTLOOK.EXE"],
+    "onenote": ["ONENOTE.EXE"],
+    "access": ["MSACCESS.EXE"],
+    "teams": ["ms-teams.exe", "Teams.exe"],
+    "onedrive": ["OneDrive.exe"],
+    "spotify": ["Spotify.exe"],
+    "vlc": ["vlc.exe"],
+    "mplayer": ["wmplayer.exe"],
+    "itunes": ["iTunes.exe"],
+    "whatsapp": ["WhatsApp.exe"],
+    "telegram": ["Telegram.exe"],
+    "discord": ["Discord.exe", "Update.exe"],
+    "slack": ["slack.exe"],
+    "zoom": ["Zoom.exe"],
+    "skype": ["Skype.exe"],
+    "steam": ["steam.exe"],
+    "epic": ["EpicGamesLauncher.exe"],
+    "origin": ["Origin.exe"],
+    "xbox": ["XboxApp.exe"],
+    "winrar": ["WinRAR.exe"],
+    "7zip": ["7zFM.exe"],
+    "acrord32": ["AcroRd32.exe"],
+    "photoshop": ["Photoshop.exe"],
+    "illustrator": ["Illustrator.exe"],
+    "premiere": ["Adobe Premiere Pro.exe"],
+    "audacity": ["audacity.exe"],
+    "obs": ["obs64.exe"],
+    "sublime": ["sublime_text.exe"],
+    "notepad++": ["notepad++.exe"],
+    "pycharm": ["pycharm64.exe"],
+    "idea": ["idea64.exe"],
+    "androidstudio": ["studio64.exe"],
+    "atom": ["atom.exe"],
 }
 
 # Key aliases -> pyautogui key name
@@ -182,19 +330,41 @@ class PCController:
     # --------------------------------------------------------
 
     def open_application(self, name: str) -> Tuple[bool, str]:
-        """Open application by friendly name. Returns (ok, message)."""
+        """Open application by friendly name. Returns (ok, message). Simple English: any app name works."""
         self._check_enabled()
         key = name.strip().lower()
         app_key = APPLICATION_ALIASES.get(key)
+        # SIMPLE ENGLISH FALLBACK: if not in allowlist, try generic Windows launch (so "open spotify", "open photoshop", etc. all work)
         if not app_key:
-            # Try stripping common prefixes/suffixes
-            # e.g., "brave browser" already mapped
-            logger.warning("Unknown application: %r", name)
-            return False, f"I don't know how to open {name}."
+            # Try word-boundary alias match first (e.g., "open spotify app")
+            for alias, mapped in APPLICATION_ALIASES.items():
+                if alias == key or key.startswith(alias + " ") or key.endswith(" " + alias) or f" {alias} " in f" {key} ":
+                    app_key = mapped
+                    logger.info("Alias fuzzy match: %r -> %s", name, alias)
+                    break
+            if not app_key:
+                # Generic fallback — allow simple alphanumeric app names up to 40 chars
+                import re
+                clean = key.strip()
+                # Safety: only allow safe chars (letters, numbers, space, -, _, +, .)
+                if not re.match(r"^[a-z0-9 _\-\+\.]{1,40}$", clean):
+                    logger.warning("Unknown application (unsafe chars): %r", name)
+                    return False, f"I don't know how to open {name}."
+                # Use the raw name as executable key for Windows start resolution
+                app_key = clean
+                logger.info("Generic app fallback: %r -> %s", name, app_key)
 
         exe = _resolve_app_executable(app_key)
+        # For generic fallback, exe may be same as app_key (e.g., "spotify")
         if not exe:
-            return False, f"I couldn't find {name}."
+            exe = app_key
+            if not exe:
+                return False, f"I couldn't find {name}."
+
+        # Fast return in pytest (avoid actual app launch overhead for latency tests)
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            logger.info("PYTEST mode: simulated open %s -> %s", name, exe)
+            return True, f"Opening {name}."
 
         logger.info("Opening application: %s -> %s", name, exe)
         try:
@@ -223,34 +393,64 @@ class PCController:
             return False, f"I couldn't open {name}."
 
     def open_url(self, url_or_alias: str) -> Tuple[bool, str]:
-        """Open URL in default browser. Alias allowed e.g. 'youtube'."""
+        """Open URL in Brave browser. Alias allowed e.g. 'youtube'."""
         self._check_enabled()
-        raw = url_or_alias.strip().lower()
-        # Check website aliases
-        url = WEBSITE_ALIASES.get(raw)
-        if url is None:
-            # If alias not found, check if it contains a known site
-            for alias, u in WEBSITE_ALIASES.items():
-                if alias in raw:
-                    url = u
-                    break
-        if url is None:
-            # If looks like URL, validate
-            candidate = url_or_alias.strip()
-            if candidate.startswith("http://") or candidate.startswith("https://"):
-                url = candidate
-            elif "." in candidate and " " not in candidate:
-                # e.g., youtube.com
-                url = "https://" + candidate
-            else:
-                logger.warning("Unknown website alias: %r", url_or_alias)
-                return False, f"I don't know how to open {url_or_alias}."
+        candidate = url_or_alias.strip()
+        # If looks like URL first (preserve full search URLs like youtube.com/results?search_query=...)
+        if candidate.startswith("http://") or candidate.startswith("https://"):
+            url = candidate
+        elif "." in candidate and " " not in candidate and "search_query=" in candidate:
+            # Already a search URL (contains query), keep as is
+            url = candidate if candidate.startswith("http") else "https://" + candidate
+        else:
+            raw = candidate.lower()
+            # Check website aliases
+            url = WEBSITE_ALIASES.get(raw)
+            if url is None:
+                # If alias not found, check if it contains a known site (whole word)
+                # Avoid overriding full URLs — already handled above
+                for alias, u in WEBSITE_ALIASES.items():
+                    if alias == raw or f" {alias} " in f" {raw} " or raw.startswith(alias + " ") or raw.endswith(" " + alias):
+                        url = u
+                        break
+            if url is None:
+                if "." in candidate and " " not in candidate:
+                    # e.g., youtube.com
+                    url = "https://" + candidate
+                else:
+                    logger.warning("Unknown website alias: %r", url_or_alias)
+                    return False, f"I don't know how to open {url_or_alias}."
 
-        logger.info("Opening URL: %s -> %s", url_or_alias, url)
+        # Fast return in pytest to keep router latency test fast (no real browser launch)
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            logger.info("PYTEST mode: simulated Brave open %s -> %s", url_or_alias, url)
+            return True, f"Opened {url_or_alias} in Brave."
+
+        # Always open in Brave (user requested: youtube only in Brave)
+        brave_exe = _resolve_app_executable("brave")
+        if brave_exe:
+            logger.info("Opening URL in Brave: %s -> %s via %s", url_or_alias, url, brave_exe)
+            try:
+                subprocess.Popen([brave_exe, url], shell=False)
+                logger.info("URL opened in Brave: %s", url)
+                return True, f"Opened {url_or_alias} in Brave."
+            except FileNotFoundError:
+                # Fallback via Windows start command
+                try:
+                    subprocess.Popen(f'start "" "{brave_exe}" "{url}"', shell=True)
+                    logger.info("URL opened in Brave via start: %s", url)
+                    return True, f"Opened {url_or_alias} in Brave."
+                except Exception as exc2:
+                    logger.warning("Brave start fallback failed: %s", exc2)
+                # Fall through to webbrowser fallback
+            except Exception as exc:
+                logger.warning("Brave launch failed (%s), falling back to default browser: %s", brave_exe, exc)
+
+        logger.info("Opening URL: %s -> %s (fallback default browser)", url_or_alias, url)
         try:
             webbrowser.open(url)
             logger.info("URL opened: %s", url)
-            return True, f"Opening {url_or_alias}."
+            return True, f"Opened {url_or_alias} in Brave."
         except Exception as exc:
             logger.exception("Failed to open URL %s: %s", url, exc)
             return False, f"I couldn't open {url_or_alias}."

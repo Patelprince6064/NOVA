@@ -21,7 +21,7 @@ class MockPC:
         return True, f"Opening {name}."
     def open_url(self, url):
         self.actions.append(("open_url", url))
-        return True, f"Opening {url}."
+        return True, f"Opened {url}."
     def type_text(self, text):
         self.actions.append(("type_text", text))
         return True, "Done."

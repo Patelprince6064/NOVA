@@ -223,14 +223,23 @@ class TaskPlanner:
                 else:
                     steps.append(TaskStep(id=sid, action="search_web", parameters={"query": q}))
                 sid += 1
+            elif "search" in part and re.search(r"on\s+(?:new\s+)?youtube", part):
+                # e.g., "search daylight on youtube" -> query daylight (fills gap for Image 1 case)
+                m = re.search(r"search\s+(.+?)\s+on\s+(?:new\s+)?youtube", part)
+                q = m.group(1).strip() if m else ""
+                q = re.split(r"\s+and\s+", q)[0].strip().rstrip(" .")
+                if q:
+                    steps.append(TaskStep(id=sid, action="youtube_search", parameters={"query": q.title() if q else "daylight"}))
+                    sid += 1
             elif any(k in part for k in ["play the first", "click the first", "first video", "first result"]):
                 # Context-aware: require prior search or youtube context, else ambiguous
                 ctx_ok = True
                 if context is not None:
                     has_search = context.get("last_search") or context.get("last_action") in ("youtube_search", "search_web", "open_url")
                     is_yt = context.get("current_site") == "youtube" or (context.get("current_url") and "youtube" in str(context.get("current_url")).lower())
-                    if not has_search and not is_yt and not context.get("last_action"):
-                        # No context — caller should have asked clarification already; skip generating
+                    has_search_in_plan = any(s.action in ("youtube_search", "search_web", "open_url") for s in steps)
+                    if not has_search and not is_yt and not context.get("last_action") and not has_search_in_plan:
+                        # No context and no search in current plan — skip generating
                         continue
                 # Two steps: find + click
                 steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
@@ -240,7 +249,73 @@ class TaskPlanner:
             elif part in ("play the first one", "play the first song", "play first song") or part == "play the first one":
                 # Explicit single-turn follow-up (also handled via router but keep heuristic)
                 if context is not None and not context.get("last_search") and context.get("last_action") not in ("youtube_search", "search_web"):
-                    continue
+                    # For multi-step where search is in same plan, allow it anyway
+                    if not any(s.action == "youtube_search" for s in steps):
+                        continue
+                steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
+                sid += 1
+                steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))
+                sid += 1
+            elif "play" in part and re.search(r"on\s+(?:new\s+)?youtube", part) and "search" not in part:
+                # e.g., "play daylight song on new youtube" -> search daylight song + play first
+                m = re.search(r"play\s+(.+?)\s+on\s+(?:new\s+)?youtube", part)
+                q = m.group(1).strip() if m else ""
+                q = re.sub(r"\s+and\s+.*$", "", q).strip().rstrip(" .")
+                if q:
+                    # Keep song in query if present (e.g., daylight song)
+                    steps.append(TaskStep(id=sid, action="youtube_search", parameters={"query": q.title()}))
+                    sid += 1
+                    steps.append(TaskStep(id=sid, action="wait", parameters={"seconds": 2}))
+                    sid += 1
+                    steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
+                    sid += 1
+                    steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))
+                    sid += 1
+                else:
+                    # Fallback to just find/click
+                    steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
+                    sid += 1
+                    steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))
+                    sid += 1
+            elif "play" in part and ("song" in part or "music" in part or part.strip() in ("play", "play the song", "play song")):
+                # Generic "play the delay song" / "play the song" without explicit youtube -> also search+play in YouTube (Image 1 fix)
+                # Extract query after "play " e.g., "the delay song" -> search that on YouTube then play
+                m = re.search(r"play\s+(.+)", part)
+                q = m.group(1).strip().rstrip(" .") if m else ""
+                # Clean filler
+                q = re.sub(r"\s+on\s+(?:new\s+)?youtube.*$", "", q, flags=re.IGNORECASE).strip()
+                has_search_in_plan = any(s.action in ("youtube_search", "search_web", "open_url") for s in steps)
+                if q and not has_search_in_plan and (not context.get("last_search") if context else True):
+                    # No prior search -> add youtube_search before find/click
+                    # Keep song in query, title case
+                    steps.append(TaskStep(id=sid, action="youtube_search", parameters={"query": q.title()}))
+                    sid += 1
+                    steps.append(TaskStep(id=sid, action="wait", parameters={"seconds": 2}))
+                    sid += 1
+                steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
+                sid += 1
+                steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))
+                sid += 1
+            elif part.startswith("play ") or part == "play":
+                # SIMPLE ENGLISH: any "play <name>" -> YouTube search + play (no need for 'song' word)
+                # e.g., "play guman", "play daylight", "play the lights on" — works for all users
+                m = re.search(r"play\s+(.+)", part)
+                q = m.group(1).strip().rstrip(" .") if m and m.group(1) else ""
+                q = re.sub(r"\s+on\s+(?:new\s+)?youtube.*$", "", q, flags=re.IGNORECASE).strip()
+                has_search_in_plan = any(s.action in ("youtube_search", "search_web", "open_url") for s in steps)
+                if q and not has_search_in_plan:
+                    steps.append(TaskStep(id=sid, action="youtube_search", parameters={"query": q.title()}))
+                    sid += 1
+                    steps.append(TaskStep(id=sid, action="wait", parameters={"seconds": 2}))
+                    sid += 1
+                elif not q:
+                    # bare "play" -> just find/click if context exists, else search default
+                    q = "music"
+                    if not has_search_in_plan:
+                        steps.append(TaskStep(id=sid, action="youtube_search", parameters={"query": q}))
+                        sid += 1
+                        steps.append(TaskStep(id=sid, action="wait", parameters={"seconds": 2}))
+                        sid += 1
                 steps.append(TaskStep(id=sid, action="find_screen_element", parameters={"target": "first video result"}))
                 sid += 1
                 steps.append(TaskStep(id=sid, action="click_screen_element", parameters={"target": "first video result"}))

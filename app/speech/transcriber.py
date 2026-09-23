@@ -23,11 +23,13 @@ class Transcriber:
         device: str = "cpu",
         compute_type: str = "int8",
         language: Optional[str] = None,
+        initial_prompt: Optional[str] = None,
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
         self.language = language
+        self.initial_prompt = initial_prompt or "play open youtube google song music brave"
         self._model = None  # lazy-loaded WhisperModel
 
     # ------------------------------------------------------------------
@@ -122,11 +124,16 @@ class Transcriber:
         )
 
         try:
+            # Simple English bias — helps Indian accent + YouTube song names
+            prompt = self.initial_prompt or "play open youtube google song music"
             segments, info = self._model.transcribe(
                 audio,
-                language=self.language,
+                language=self.language or "en",
                 beam_size=5,
-                vad_filter=True,  # filter out silence segments
+                vad_filter=True,
+                initial_prompt=prompt,
+                condition_on_previous_text=False,
+                hallucination_silence_threshold=0.6,
             )
             # faster-whisper returns a generator for segments
             text_parts = [seg.text for seg in segments]

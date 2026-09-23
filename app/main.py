@@ -389,15 +389,33 @@ def route_pc_command(text: str, controller: PCController, interpreter, config, b
                     browser_actions = {"search_web", "youtube_search", "browser_back", "browser_forward", "browser_refresh", "browser_scroll", "close_browser", "open_url"}
                     # action already set
                     if browser_controller is not None and config.browser_enabled and action in browser_actions:
-                        # Map validated browser action to BrowserController
+                        # Map validated browser action to appropriate controller
+                        # open_url is routed to PC (Brave) per user preference
                         try:
                             if action == "open_url":
                                 target = validated.get("website") or validated.get("url") or ""
-                                ok, msg = browser_controller.open_url(target)
+                                # Prefer Brave (PC) — fallback to BrowserController
+                                ok, msg = execute_structured_action(validated, controller)
+                                if not ok and browser_controller:
+                                    # fallback if PC failed
+                                    ok2, msg2 = browser_controller.open_url(target)
+                                    if ok2:
+                                        ok, msg = ok2, msg2
                             elif action == "search_web":
-                                ok, msg = browser_controller.search_web(validated.get("query", ""))
+                                # Search in Brave (not Playwright overlay) per user Image 2
+                                from app.browser.sites import google_search_url
+                                q = validated.get("query", "")
+                                url = google_search_url(q) if q else "https://www.google.com"
+                                ok, msg = controller.open_url(url)
+                                if not ok and browser_controller:
+                                    ok, msg = browser_controller.search_web(q)
                             elif action == "youtube_search":
-                                ok, msg = browser_controller.youtube_search(validated.get("query", ""))
+                                from app.browser.sites import youtube_search_url
+                                q = validated.get("query", "")
+                                url = youtube_search_url(q) if q else "https://www.youtube.com"
+                                ok, msg = controller.open_url(url)
+                                if not ok and browser_controller:
+                                    ok, msg = browser_controller.youtube_search(q)
                             elif action == "browser_back":
                                 ok, msg = browser_controller.go_back()
                             elif action == "browser_forward":
@@ -466,6 +484,19 @@ def is_multi_step_request(text: str) -> bool:
     triggers = ["open ", "launch ", "search ", "type ", "press ", "click ", "scroll "]
     trigger_count = sum(1 for t in triggers if t in low)
     if trigger_count >= 2:
+        return True
+    # Play on YouTube implies search + click (Image 2 -> should play, not just search)
+    # e.g., "Play daylight song on new YouTube", "Play daylight on YouTube"
+    if "play" in low and "youtube" in low:
+        return True
+    # SIMPLE ENGLISH: any "play <name>" -> search+play (no 'song' needed) so all users can say "play guman"
+    if low.strip().startswith("play ") and len(low.strip().split()) >= 2:
+        return True
+    # Play song even without explicit youtube -> still search+play in Brave (user Image 1: Play the delay song)
+    if "play" in low and ("song" in low or "music" in low):
+        return True
+    # Search + play in same utterance without 'and' connector (e.g., search daylight play song)
+    if "search" in low and "play" in low and "youtube" in low:
         return True
     return False
 
@@ -1040,8 +1071,8 @@ def main() -> None:
 
     logger.info("Microphone selected: [%d] %s", selected.index, selected.name)
 
-    # ---- Load Whisper model once ----
-    transcriber = Transcriber(model_name=config.whisper_model, device=config.whisper_device, compute_type=config.whisper_compute_type, language=config.language)
+    # ---- Load Whisper model once ---- (simple English bias)
+    transcriber = Transcriber(model_name=config.whisper_model, device=config.whisper_device, compute_type=config.whisper_compute_type, language=config.language or "en", initial_prompt=getattr(config, "whisper_initial_prompt", None))
     try:
         transcriber.load()
     except RuntimeError as exc:
