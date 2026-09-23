@@ -1,41 +1,38 @@
 import { motion } from 'framer-motion'
 
-const chips = ["Open Notepad","Search YouTube","Scroll down","Explain what\\u0027s on my screen","Stop","Do that again"]
-
 export default function VoiceDemo() {
   return (
-    <section className="py-10 lg:py-16 bg-white">
-      <div className="max-w-[1200px] mx-auto px-6 lg:px-8">
-        <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-8 lg:gap-12 items-center rounded-[28px] bg-gray-50 border border-gray-200 p-6 lg:p-8">
-          <div className="relative rounded-[20px] bg-white border border-gray-200 p-5 lg:p-6 overflow-hidden shadow-sm">
-            <div className="relative">
-              <div className="flex items-center gap-3 text-gray-900">
-                <span className="w-8 h-8 rounded-full bg-gray-900 grid place-items-center text-white text-[11px]">\u25C9</span>
-                <span className="text-[14px] font-medium">Hey Nova, open Brave.</span>
+    <section className="py-10 lg:py-14 bg-white border-y border-[#e8e8ed]">
+      <div className="max-w-[1160px] mx-auto px-4 lg:px-6">
+        <div className="grid lg:grid-cols-2 gap-8 items-center">
+          <div className="rounded-[20px] bg-[#1d1d1f] p-5 lg:p-6 window-shadow overflow-hidden">
+            <div className="flex items-center gap-2 text-white/60 text-[11px] font-mono tracking-[0.08em] uppercase">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Live demo
+            </div>
+            <div className="mt-4 space-y-3 font-mono text-[13px]">
+              <div className="flex items-center gap-3 text-white">
+                <span className="w-7 h-7 rounded-full bg-white/10 grid place-items-center text-[10px]">\u25C9</span>
+                <span>Hey Nova, open Brave and go to YouTube</span>
               </div>
-              <div className="mt-4 flex items-center gap-1 text-gray-300">
-                <span className="w-1 h-1 rounded-full bg-gray-400 animate-pulse" />
-                <span className="w-1 h-1 rounded-full bg-gray-400 animate-pulse [animation-delay:200ms]" />
-                <span className="w-1 h-1 rounded-full bg-gray-400 animate-pulse [animation-delay:400ms]" />
+              <div className="ml-10 rounded-lg bg-white/[0.06] border border-white/10 p-3">
+                <div className="text-white/80">Opening Brave...</div>
+                <div className="text-emerald-400 mt-1">\u2713 Brave is ready \u2014 navigating to YouTube</div>
               </div>
-              <div className="mt-6 rounded-xl bg-gray-50 border border-gray-200 p-4">
-                <p className="text-[13px] text-gray-600">Opening Brave...</p>
-                <p className="mt-2 text-[13px] text-emerald-600">\u2713 Brave is ready.</p>
-              </div>
-              <div className="mt-6 flex items-center justify-center gap-1">
-                {[6,14,10,20,12,8].map((h,i)=>(
-                  <motion.span key={i} animate={{height:[h*0.6,h,h*0.6]}} transition={{duration:1.2, repeat:Infinity, delay:i*0.12}} className="w-[3px] rounded-full bg-gray-900/70" style={{height:h}} />
+              <div className="ml-10 flex items-center gap-1 pt-1">
+                {[10,18,14,24,16,12].map((h,i)=>(
+                  <motion.span key={i} animate={{height:[h*0.6,h,h*0.6]}} transition={{duration:1, repeat:Infinity, delay:i*0.1}} className="w-[3px] rounded-full bg-emerald-400/70" style={{height:h}} />
                 ))}
+                <span className="ml-2 text-[10px] text-white/30">transcribing</span>
               </div>
             </div>
           </div>
           <div>
-            <p className="text-[11px] font-semibold tracking-[0.16em] text-gray-400 uppercase">Natural. Fast. Helpful.</p>
-            <h3 className="mt-3 font-display text-[34px] lg:text-[40px] font-semibold tracking-[-0.03em] text-gray-900 leading-[0.95]">Just say it.</h3>
-            <p className="mt-4 text-[14px] leading-relaxed text-gray-500 max-w-[420px]">Talk to Nova like you would talk to a teammate. It understands what you mean and gets it done.</p>
-            <div className="mt-6 flex flex-wrap gap-2">
-              {chips.map(c=>(
-                <span key={c} className="px-3 py-1.5 rounded-full bg-white border border-gray-200 text-[12px] font-medium text-gray-600">"{c}"</span>
+            <p className="text-[11px] font-semibold tracking-[0.16em] text-[#86868b] uppercase">Natural. Fast. Helpful.</p>
+            <h3 className="mt-2 font-display text-[28px] lg:text-[34px] font-semibold tracking-[-0.03em] text-[#1d1d1f] leading-[1.05]">Just say it.</h3>
+            <p className="mt-3 text-[14px] leading-relaxed text-[#6e6e73] max-w-[420px]">Talk to Nova like you would talk to a teammate. It understands what you mean and gets it done — no memorizing commands.</p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {["Open Notepad","Search YouTube","Scroll down","What\\u0027s on my screen?","Stop","Do that again"].map(c=>(
+                <span key={c} className="px-3 py-1.5 rounded-full bg-[#f5f5f7] border border-[#e8e8ed] text-[11px] font-medium text-[#424245]">\u201C{c}\u201D</span>
               ))}
             </div>
           </div>
