@@ -1,28 +1,30 @@
-import { Download, ExternalLink } from 'lucide-react'
+import { Download, ExternalLink, ArrowRight } from 'lucide-react'
 
 export default function DownloadCTA(){
   const dl = import.meta.env.VITE_DOWNLOAD_URL
-  const gh = import.meta.env.VITE_GITHUB_URL || "https://github.com/Patelprince6064/NOVA"
   return (
-    <section id="download" className="py-12 lg:py-20 bg-white">
-      <div className="max-w-[1200px] mx-auto px-6 lg:px-8">
-        <div className="relative overflow-hidden rounded-[28px] bg-gray-900 border border-gray-800 p-8 lg:p-12">
-          <div className="absolute -top-20 -right-20 w-[500px] h-[500px] bg-white/5 blur-3xl rounded-full" />
-          <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-8">
+    <section id="download" className="py-12 lg:py-16 bg-white">
+      <div className="max-w-[1160px] mx-auto px-4 lg:px-6">
+        <div className="relative overflow-hidden rounded-[24px] bg-slate-900 border border-slate-800 p-6 lg:p-10">
+          <div className="absolute -top-24 -right-24 w-[520px] h-[520px] bg-indigo-600/20 blur-3xl rounded-full" />
+          <div className="absolute -bottom-24 -left-24 w-[420px] h-[420px] bg-violet-600/15 blur-3xl rounded-full" />
+          <div className="absolute inset-0 bg-grid opacity-[0.04]" />
+          <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div>
-              <h2 className="font-display text-[32px] lg:text-[40px] font-semibold tracking-[-0.03em] text-white leading-[1.05]">Your smarter,<br/>hands-free PC experience<br/>starts here.</h2>
-              <p className="mt-4 text-[13px] text-white/50">Free \u00B7 Open source \u00B7 Built for everyday use</p>
+              <h2 className="font-display text-[26px] lg:text-[34px] font-semibold tracking-[-0.03em] text-white leading-[1.05]">Start hands-free today.</h2>
+              <p className="mt-2 text-[13px] text-white/60">Free \u00B7 Open source \u00B7 Runs on your machine \u00B7 No account needed</p>
+              <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                <span className="px-2.5 py-1 rounded-full bg-white/10 border border-white/10 text-white/80">Windows 10/11</span>
+                <span className="px-2.5 py-1 rounded-full bg-white/10 border border-white/10 text-white/80">4 cores 8GB</span>
+                <span className="px-2.5 py-1 rounded-full bg-white/10 border border-white/10 text-white/80">Mic required</span>
+              </div>
             </div>
             <div className="flex flex-wrap gap-3 shrink-0">
-              {dl ? (
-                <a href={dl} className="inline-flex items-center gap-2 h-[46px] px-6 rounded-full bg-white text-gray-900 font-medium hover:bg-gray-100 transition-colors">
-                  <Download size={16}/> Download for Windows
-                </a>
-              ) : (
-                <span className="inline-flex items-center gap-2 h-[46px] px-6 rounded-full bg-white/10 border border-white/20 text-white/50 text-[14px]">Download coming soon</span>
-              )}
-              <a href={gh} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 h-[46px] px-6 rounded-full bg-white/10 border border-white/20 text-white font-medium hover:bg-white/15 transition-colors">
-                <ExternalLink size={16}/> View on GitHub
+              <a href={dl || "#"} className="inline-flex items-center gap-2 h-11 px-6 rounded-full bg-white text-slate-900 font-medium text-[14px] hover:bg-slate-100 transition-colors">
+                <Download size={16} /> Download for Windows <ArrowRight size={14} />
+              </a>
+              <a href="https://github.com/Patelprince6064/NOVA" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 h-11 px-6 rounded-full bg-white/10 border border-white/20 text-white font-medium text-[14px] hover:bg-white/15">
+                <ExternalLink size={16} /> GitHub
               </a>
             </div>
           </div>

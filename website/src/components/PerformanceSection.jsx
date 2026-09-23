@@ -2,31 +2,32 @@ import { motion } from 'framer-motion'
 
 export default function PerformanceSection(){
   return (
-    <section className="py-12 lg:py-16 bg-gray-50/50">
-      <div className="max-w-[1200px] mx-auto px-6 lg:px-8">
-        <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-8 items-center rounded-[28px] bg-white border border-gray-200 p-6 lg:p-10 overflow-hidden relative shadow-sm">
-          <div className="relative">
-            <h2 className="font-display text-[34px] font-semibold tracking-[-0.03em] text-gray-900">Fast by design.</h2>
-            <div className="mt-6 space-y-3">
-              <div className="flex items-baseline gap-3">
-                <span className="text-[28px] font-semibold text-gray-900 tracking-[-0.02em]">Milliseconds</span>
-                <span className="text-[12px] font-medium tracking-[0.12em] text-gray-400 uppercase">Local commands</span>
-              </div>
-              <p className="text-[13px] leading-relaxed text-gray-500 max-w-[460px]">Simple commands are handled locally whenever possible, while AI is used when natural-language understanding is actually needed.</p>
-              <div className="flex flex-wrap gap-2 pt-2">
-                <span className="px-3 py-1 rounded-full bg-gray-900 text-white text-[12px] font-semibold">No unnecessary AI calls</span>
-                <span className="px-3 py-1 rounded-full bg-gray-100 border border-gray-200 text-gray-600 text-[12px]">Ready when you are</span>
-              </div>
+    <section className="py-12 lg:py-16 bg-[#F8FAFC] border-y border-slate-200">
+      <div className="max-w-[1160px] mx-auto px-4 lg:px-6">
+        <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-6 items-center">
+          <div>
+            <h2 className="font-display text-[24px] font-semibold tracking-[-0.03em] text-slate-900">Fast where it counts.</h2>
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-500 max-w-[460px]">Router handles common commands in milliseconds. Whisper + TTS are local. AI only when needed.</p>
+            <div className="mt-4 flex gap-2">
+              <span className="px-3 py-1 rounded-full bg-indigo-600 text-white text-[11px] font-medium">Local-first</span>
+              <span className="px-3 py-1 rounded-full bg-white border border-slate-200 text-slate-600 text-[11px]">Reuse models</span>
             </div>
           </div>
-          <motion.div initial={{opacity:0, y:10}} whileInView={{opacity:1,y:0}} viewport={{once:true}} className="relative rounded-2xl bg-gray-50 border border-gray-200 p-6">
-            <div className="text-[11px] tracking-[0.12em] text-gray-400 uppercase">Benchmark (local)</div>
-            <div className="mt-3 grid grid-cols-3 gap-4 text-center">
-              <div><div className="text-[22px] font-semibold text-gray-900">~25ms</div><div className="text-[11px] text-gray-400">Router</div></div>
-              <div><div className="text-[22px] font-semibold text-gray-900">~45ms</div><div className="text-[11px] text-gray-400">Total</div></div>
-              <div><div className="text-[22px] font-semibold text-gray-900">~1s</div><div className="text-[11px] text-gray-400">Voice + STT</div></div>
+          <motion.div initial={{opacity:0,y:10}} whileInView={{opacity:1,y:0}} viewport={{once:true}} className="rounded-2xl bg-white border border-slate-200 p-5 shadow-sm">
+            <div className="text-[10px] tracking-[0.12em] text-slate-400 uppercase">Local benchmark</div>
+            <div className="mt-3 grid grid-cols-3 gap-3 text-center">
+              {["~25ms","~45ms","~0.9s"].map((v,i)=>(
+                <div key={v} className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="text-[16px] font-semibold text-slate-900">{v}</div>
+                  <div className="text-[10px] text-slate-500">{["Router","Total","Voice" ][i]}</div>
+                </div>
+              ))}
             </div>
-            <div className="mt-4 text-[11px] text-gray-400">Measured on local router; STT excluded. Real LLM 1-3s.</div>
+            <div className="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden flex gap-1 p-1">
+              <motion.div initial={{width:0}} whileInView={{width:"28%"}} transition={{duration:0.8}} className="h-full rounded-full bg-indigo-500" />
+              <motion.div initial={{width:0}} whileInView={{width:"42%"}} transition={{duration:0.8, delay:0.15}} className="h-full rounded-full bg-violet-500" />
+              <motion.div initial={{width:0}} whileInView={{width:"18%"}} transition={{duration:0.8, delay:0.3}} className="h-full rounded-full bg-slate-300" />
+            </div>
           </motion.div>
         </div>
       </div>
