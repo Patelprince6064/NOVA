@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 AllowedActions = [
     "open_application",
+    "close_application",
     "open_url",
     "type_text",
     "press_key",
@@ -22,6 +23,63 @@ AllowedActions = [
     "click",
     "double_click",
     "right_click",
+    "move_mouse",
+    # Editing
+    "copy",
+    "paste",
+    "cut",
+    "select_all",
+    "undo",
+    "redo",
+    # Window management Phase 13
+    "minimize_window",
+    "maximize_window",
+    "restore_window",
+    "close_window",
+    "switch_window",
+    "show_desktop",
+    "move_window",
+    # Files Phase 13
+    "open_folder",
+    "open_file",
+    "search_files",
+    "create_folder",
+    "rename_file",
+    "rename_folder",
+    "copy_file",
+    "move_file",
+    "delete_file",
+    "list_apps",
+    "find_app",
+    # Media Phase 13
+    "volume_up",
+    "volume_down",
+    "set_volume",
+    "mute",
+    "unmute",
+    "media_play_pause",
+    "media_next",
+    "media_previous",
+    # Screenshot/clipboard
+    "take_screenshot",
+    "clipboard_read",
+    "clipboard_clear",
+    # System Phase 13
+    "system_info",
+    "cpu_info",
+    "memory_info",
+    "storage_info",
+    "battery_info",
+    "network_info",
+    "process_info",
+    "open_settings",
+    "lock_pc",
+    "shutdown_pc",
+    "restart_pc",
+    "sleep_pc",
+    # Utilities
+    "calculate",
+    "get_time",
     # Browser actions Phase 6
     "search_web",
     "youtube_search",
@@ -34,6 +92,7 @@ AllowedActions = [
     "analyze_screen",
     "find_screen_element",
     "get_active_window",
+    "click_screen_element",
     # Meta actions (not PC, just responses)
     "unsupported",
     "clarification",
@@ -225,8 +284,137 @@ def validate_action(data: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str,
         # No amount/direction -> use default scroll up? But require explicit
         return False, "scroll requires 'amount' or 'direction'", None
 
-    if action in ("click", "double_click", "right_click"):
+    if action in ("click", "double_click", "right_click", "copy", "paste", "cut", "select_all", "undo", "redo"):
         return True, "", {"action": action}
+    if action == "move_mouse":
+        x = data.get("x"); y = data.get("y")
+        try:
+            xi = int(x) if x is not None else 0
+            yi = int(y) if y is not None else 0
+        except Exception:
+            return False, "move_mouse requires int x,y", None
+        if not 0 <= xi <= 8000 or not 0 <= yi <= 8000:
+            return False, "coordinates out of range", None
+        return True, "", {"action": "move_mouse", "x": xi, "y": yi}
+    # Window management
+    if action in ("minimize_window", "maximize_window", "restore_window", "close_window", "show_desktop"):
+        return True, "", {"action": action}
+    if action == "switch_window":
+        target = data.get("target") or data.get("application") or data.get("name") or ""
+        if not isinstance(target, str):
+            return False, "switch_window requires target string", None
+        return True, "", {"action": "switch_window", "target": target.strip()[:100]}
+    if action == "move_window":
+        direction = data.get("direction") or data.get("target") or "left"
+        if not isinstance(direction, str) or direction.strip().lower() not in ("left", "right", "top", "bottom", "up", "down"):
+            direction = "left"
+        return True, "", {"action": "move_window", "direction": direction.strip().lower()}
+    if action == "close_application":
+        app = data.get("application") or data.get("target") or data.get("name") or ""
+        if not isinstance(app, str):
+            return False, "close_application requires application", None
+        return True, "", {"action": "close_application", "application": app.strip()[:100]}
+    # Files
+    if action == "open_folder":
+        folder = data.get("folder") or data.get("path") or data.get("target") or ""
+        if not isinstance(folder, str) or not folder.strip():
+            return False, "open_folder requires folder", None
+        if len(folder) > 200:
+            return False, "folder name too long", None
+        return True, "", {"action": "open_folder", "folder": folder.strip()}
+    if action == "open_file":
+        path = data.get("path") or data.get("file") or ""
+        if not isinstance(path, str) or not path.strip():
+            return False, "open_file requires path", None
+        if len(path) > 300:
+            return False, "path too long", None
+        return True, "", {"action": "open_file", "path": path.strip()}
+    if action == "search_files":
+        query = data.get("query") or data.get("text") or data.get("q") or ""
+        if not isinstance(query, str) or not query.strip():
+            return False, "search_files requires query", None
+        if len(query) > 100:
+            return False, "query too long", None
+        directory = data.get("directory") or ""
+        if directory and not isinstance(directory, str):
+            directory = ""
+        return True, "", {"action": "search_files", "query": query.strip(), "directory": directory.strip()[:100] if directory else ""}
+    if action == "create_folder":
+        path = data.get("path") or data.get("folder") or data.get("name") or ""
+        if not isinstance(path, str) or not path.strip():
+            return False, "create_folder requires path", None
+        if len(path) > 200:
+            return False, "path too long", None
+        if "/" in path or "\\" in path or ".." in path:
+            return False, "Invalid folder name", None
+        return True, "", {"action": "create_folder", "path": path.strip()}
+    if action in ("rename_file", "rename_folder"):
+        old = data.get("old") or data.get("src") or data.get("path") or ""
+        new = data.get("new") or data.get("dst") or data.get("target") or ""
+        if not isinstance(old, str) or not old.strip() or not isinstance(new, str) or not new.strip():
+            return False, f"{action} requires old and new", None
+        return True, "", {"action": action, "old": old.strip()[:200], "new": new.strip()[:200]}
+    if action in ("copy_file", "move_file"):
+        src = data.get("src") or data.get("old") or data.get("path") or ""
+        dst = data.get("dst") or data.get("new") or data.get("target") or ""
+        if not isinstance(src, str) or not src.strip() or not isinstance(dst, str) or not dst.strip():
+            return False, f"{action} requires src and dst", None
+        return True, "", {"action": action, "src": src.strip()[:300], "dst": dst.strip()[:300]}
+    if action == "delete_file":
+        path = data.get("path") or data.get("file") or ""
+        if not isinstance(path, str) or not path.strip():
+            return False, "delete_file requires path", None
+        return True, "", {"action": "delete_file", "path": path.strip()[:300]}
+    if action in ("list_apps", "find_app"):
+        if action == "find_app":
+            app = data.get("application") or data.get("target") or ""
+            if not isinstance(app, str) or not app.strip():
+                return False, "find_app requires application", None
+            return True, "", {"action": "find_app", "application": app.strip()[:100]}
+        return True, "", {"action": action}
+    # Media
+    if action in ("volume_up", "volume_down", "mute", "unmute", "media_play_pause", "media_next", "media_previous"):
+        return True, "", {"action": action}
+    if action == "set_volume":
+        lvl = data.get("level") or data.get("volume") or data.get("amount")
+        try:
+            lvl = int(lvl)
+        except Exception:
+            return False, "set_volume requires int level 0-100", None
+        if not 0 <= lvl <= 100:
+            return False, "volume out of range 0-100", None
+        return True, "", {"action": "set_volume", "level": lvl}
+    # Screenshot/clipboard
+    if action in ("take_screenshot", "clipboard_read", "clipboard_clear"):
+        return True, "", {"action": action}
+    # System
+    if action in ("system_info", "cpu_info", "memory_info", "storage_info", "battery_info", "network_info"):
+        return True, "", {"action": action}
+    if action == "process_info":
+        q = data.get("query") or data.get("target") or ""
+        if q and not isinstance(q, str):
+            return False, "process_info query must be string", None
+        return True, "", {"action": "process_info", "query": (q or "").strip()[:100]}
+    if action == "open_settings":
+        page = data.get("page") or data.get("target") or ""
+        if page and not isinstance(page, str):
+            return False, "open_settings page must be string", None
+        return True, "", {"action": "open_settings", "page": (page or "").strip()[:50]}
+    if action in ("lock_pc", "shutdown_pc", "restart_pc", "sleep_pc"):
+        confirm = data.get("confirm", False)
+        if action != "lock_pc" and not confirm:
+            # Require explicit confirm param, but allow without and will ask
+            return True, "", {"action": action, "confirm": bool(confirm)}
+        return True, "", {"action": action, "confirm": bool(confirm)}
+    if action == "calculate":
+        expr = data.get("expression") or data.get("text") or data.get("query") or ""
+        if not isinstance(expr, str) or not expr.strip():
+            return False, "calculate requires expression", None
+        if len(expr) > 100:
+            return False, "expression too long", None
+        return True, "", {"action": "calculate", "expression": expr.strip()}
+    if action == "get_time":
+        return True, "", {"action": "get_time"}
 
     # Browser actions Phase 6
     if action == "search_web":

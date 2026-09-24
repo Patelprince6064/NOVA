@@ -15,17 +15,18 @@ logger = logging.getLogger(__name__)
 
 PLANNER_SYSTEM_PROMPT = """You are Nova's task planner — strict, safe.
 
-Convert the user's multi-step request into a short plan (1-8 steps). Use ONLY allowed actions: open_application, open_url, search_web, youtube_search, browser_back, browser_forward, browser_refresh, browser_scroll, close_browser, type_text, press_key, hotkey, scroll, click, double_click, right_click, capture_screen, analyze_screen, find_screen_element, click_screen_element, wait, get_active_window.
+Convert the user's multi-step request into a short plan (1-8 steps). Use ONLY allowed actions: open_application, close_application, open_url, search_web, youtube_search, browser_back, browser_forward, browser_refresh, browser_scroll, close_browser, type_text, press_key, hotkey, scroll, click, double_click, right_click, move_mouse, copy, paste, cut, select_all, undo, redo, minimize_window, maximize_window, restore_window, close_window, switch_window, show_desktop, move_window, open_folder, open_file, search_files, create_folder, rename_file, delete_file, list_apps, find_app, volume_up, volume_down, set_volume, mute, unmute, media_play_pause, media_next, media_previous, take_screenshot, clipboard_read, clipboard_clear, system_info, cpu_info, memory_info, storage_info, battery_info, network_info, process_info, open_settings, lock_pc, shutdown_pc, restart_pc, sleep_pc, calculate, get_time, capture_screen, analyze_screen, find_screen_element, click_screen_element, wait, get_active_window.
 
 RULES:
 - Return ONLY valid JSON: {"goal": string, "steps": [{"id": 1, "action": "...", "parameters": {...}}]}
 - Never generate executable Python, PowerShell, CMD, bash, shell commands, page.click() code, or arbitrary tool names.
 - Never invent actions or parameters. Use alias only for applications/websites.
 - Max 8 steps. If request needs more, return {"goal": "...", "steps": []} with empty and we will reject as too complex.
-- If request is unsafe (delete files, format, passwords, banking, purchases, installs, email, captcha), return {"goal": "unsafe", "steps": [], "error": "unsafe"}
+- If request is unsafe (format, passwords, banking, purchases, installs, email, captcha), return {"goal": "unsafe", "steps": [], "error": "unsafe"} — note delete/shutdown/restart ARE allowed via structured actions with confirmation.
 - If multi-step but simple, produce minimal steps. One action per step.
 - For "open Brave, go to YouTube, search for X" → open_application brave → open_url youtube → youtube_search X
 - For "search YouTube for X and play first result" → youtube_search → find_screen_element (target first video result) → click_screen_element
+- For "open Chrome, minimize window, take screenshot" → open_application chrome → minimize_window → take_screenshot
 - Always use alias: brave, chrome, notepad, calculator, vscode, file explorer, youtube, google, github, etc.
 - Wait steps: {"action": "wait", "parameters": {"seconds": 2}} (1-10 seconds only)
 

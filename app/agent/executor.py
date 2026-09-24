@@ -549,6 +549,89 @@ class TaskExecutor:
                     win = self.pc.get_foreground_window()
                     return True, f"{win} is open." if win else "No active window."
                 return False, "PC not available"
+            # Extended Phase 13 actions
+            if action in ("minimize_window", "maximize_window", "restore_window", "close_window", "show_desktop"):
+                if self.pc: return getattr(self.pc, action)()
+                return False, "PC not available"
+            if action == "switch_window":
+                if self.pc: return self.pc.switch_window(p.get("target", ""))
+                return False, "PC not available"
+            if action == "move_window":
+                if self.pc: return self.pc.move_window(p.get("direction", "left"))
+                return False, "PC not available"
+            if action == "close_application":
+                if self.pc: return self.pc.close_application(p.get("application", ""))
+                return False, "PC not available"
+            if action == "open_folder":
+                if self.pc: return self.pc.open_folder(p.get("folder", ""))
+                return False, "PC not available"
+            if action == "open_file":
+                if self.pc: return self.pc.open_file(p.get("path", ""))
+                return False, "PC not available"
+            if action == "search_files":
+                if self.pc: return self.pc.search_files(p.get("query", ""), p.get("directory", ""))
+                return False, "PC not available"
+            if action == "create_folder":
+                if self.pc: return self.pc.create_folder(p.get("path", ""))
+                return False, "PC not available"
+            if action in ("rename_file", "rename_folder"):
+                if self.pc: return self.pc.rename_file(p.get("old", ""), p.get("new", ""))
+                return False, "PC not available"
+            if action == "copy_file":
+                try:
+                    import shutil
+                    shutil.copy2(p.get("src",""), p.get("dst",""))
+                    return True, f"Copied."
+                except Exception as exc: return False, str(exc)
+            if action == "move_file":
+                try:
+                    import shutil
+                    shutil.move(p.get("src",""), p.get("dst",""))
+                    return True, f"Moved."
+                except Exception as exc: return False, str(exc)
+            if action == "delete_file":
+                if self.pc: return self.pc.delete_file(p.get("path",""))
+                return False, "PC not available"
+            if action == "list_apps":
+                if self.pc: return self.pc.list_apps()
+                return False, "PC not available"
+            if action == "find_app":
+                if self.pc: return self.pc.find_app(p.get("application",""))
+                return False, "PC not available"
+            if action in ("volume_up", "volume_down", "mute", "unmute", "media_play_pause", "media_next", "media_previous", "take_screenshot", "clipboard_read", "clipboard_clear"):
+                if self.pc: return getattr(self.pc, action)()
+                return False, "PC not available"
+            if action == "set_volume":
+                if self.pc: return self.pc.set_volume(int(p.get("level", 50)))
+                return False, "PC not available"
+            if action == "open_settings":
+                if self.pc: return self.pc.open_settings(p.get("page",""))
+                return False, "PC not available"
+            if action == "lock_pc":
+                if self.pc: return self.pc.lock_pc()
+                return False, "PC not available"
+            if action in ("shutdown_pc", "restart_pc", "sleep_pc"):
+                if self.pc: return getattr(self.pc, action)(confirm=p.get("confirm", False))
+                return False, "PC not available"
+            if action in ("system_info", "cpu_info", "memory_info", "storage_info", "battery_info", "network_info"):
+                if self.pc: return getattr(self.pc, action)()
+                return False, "PC not available"
+            if action == "process_info":
+                if self.pc: return self.pc.process_info(p.get("query",""))
+                return False, "PC not available"
+            if action == "get_time":
+                if self.pc: return self.pc.get_time()
+                return False, "PC not available"
+            if action == "calculate":
+                if self.pc: return self.pc.calculate(p.get("expression",""))
+                return False, "PC not available"
+            if action in ("copy", "paste", "cut", "select_all", "undo", "redo"):
+                mapping = {"copy": ("ctrl","c"), "paste": ("ctrl","v"), "cut": ("ctrl","x"), "select_all": ("ctrl","a"), "undo": ("ctrl","z"), "redo": ("ctrl","y")}
+                if self.pc: return self.pc.hotkey(*mapping[action])
+                return False, "PC not available"
+            if action == "move_mouse":
+                if self.pc: return self.pc.move_mouse(int(p.get("x",0)), int(p.get("y",0)))
+                return False, "PC not available"
 
             return False, f"Unknown action {action}"
 

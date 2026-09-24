@@ -624,3 +624,224 @@ class PCController:
         except Exception as exc:
             logger.debug("Failed to get foreground window: %s", exc)
         return None
+
+    # --------------------------------------------------------
+    # Window management (Phase 13)
+    # --------------------------------------------------------
+    def minimize_window(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import minimize_window as _fn
+        return _fn()
+
+    def maximize_window(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import maximize_window as _fn
+        return _fn()
+
+    def restore_window(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import restore_window as _fn
+        return _fn()
+
+    def close_window(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import close_window as _fn
+        return _fn()
+
+    def switch_window(self, target: str = "") -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import switch_window as _fn
+        return _fn(target)
+
+    def show_desktop(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import show_desktop as _fn
+        return _fn()
+
+    def move_window(self, direction: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.window_tools import move_window as _fn
+        return _fn(direction)
+
+    def close_application(self, name: str = "") -> Tuple[bool, str]:
+        self._check_enabled()
+        if name and name.strip():
+            # Try to close specific app window gracefully
+            ok, msg = self.switch_window(name)
+            if ok:
+                return self.close_window()
+            # Fallback try to kill gracefully via taskkill /im
+            return self.close_window()
+        return self.close_window()
+
+    # --------------------------------------------------------
+    # File operations (Phase 13)
+    # --------------------------------------------------------
+    def open_folder(self, folder: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import open_folder as _fn
+        return _fn(folder)
+
+    def open_file(self, path: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import open_file as _fn
+        return _fn(path)
+
+    def search_files(self, query: str, directory: str = "") -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import search_files as _fn
+        return _fn(query, directory)
+
+    def create_folder(self, path: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import create_folder as _fn
+        return _fn(path)
+
+    def rename_file(self, old: str, new: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import rename_file as _fn
+        return _fn(old, new)
+
+    def delete_file(self, path: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import delete_file as _fn
+        return _fn(path)
+
+    def find_app(self, name: str) -> Tuple[bool, str]:
+        self._check_enabled()
+        key = name.strip().lower()
+        if key in APPLICATION_ALIASES:
+            return True, f"{name} is available (alias {key})."
+        # Search via file_tools
+        from app.tools.file_tools import get_installed_apps
+        ok, msg = get_installed_apps()
+        if key in msg.lower():
+            return True, f"{name} appears to be installed."
+        return False, f"I couldn't find {name} on this PC."
+
+    def list_apps(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.file_tools import get_installed_apps as _fn
+        return _fn()
+
+    # --------------------------------------------------------
+    # Media / Volume (Phase 13)
+    # --------------------------------------------------------
+    def volume_up(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import volume_up as _fn
+        return _fn()
+
+    def volume_down(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import volume_down as _fn
+        return _fn()
+
+    def set_volume(self, level: int) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import set_volume as _fn
+        return _fn(level)
+
+    def mute(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import mute as _fn
+        return _fn()
+
+    def unmute(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import unmute as _fn
+        return _fn()
+
+    def media_play_pause(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import media_play_pause as _fn
+        return _fn()
+
+    def media_next(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import media_next as _fn
+        return _fn()
+
+    def media_previous(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import media_previous as _fn
+        return _fn()
+
+    def take_screenshot(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import take_screenshot as _fn
+        return _fn()
+
+    def clipboard_read(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import clipboard_read as _fn
+        return _fn()
+
+    def clipboard_clear(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import clipboard_clear as _fn
+        return _fn()
+
+    def open_settings(self, page: str = "") -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import open_settings as _fn
+        return _fn(page)
+
+    def lock_pc(self) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import lock_pc as _fn
+        return _fn()
+
+    def shutdown_pc(self, confirm: bool = False) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import shutdown_pc as _fn
+        return _fn(confirm)
+
+    def restart_pc(self, confirm: bool = False) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import restart_pc as _fn
+        return _fn(confirm)
+
+    def sleep_pc(self, confirm: bool = False) -> Tuple[bool, str]:
+        self._check_enabled()
+        from app.tools.media_tools import sleep_pc as _fn
+        return _fn(confirm)
+
+    # --------------------------------------------------------
+    # System info (Phase 13)
+    # --------------------------------------------------------
+    def system_info(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_system_info as _fn
+        return _fn()
+
+    def cpu_info(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_cpu_info as _fn
+        return _fn()
+
+    def memory_info(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_memory_info as _fn
+        return _fn()
+
+    def storage_info(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_storage_info as _fn
+        return _fn()
+
+    def battery_info(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_battery_info as _fn
+        return _fn()
+
+    def network_info(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_network_info as _fn
+        return _fn()
+
+    def process_info(self, query: str = "") -> Tuple[bool, str]:
+        from app.tools.system_tools import get_process_info as _fn
+        return _fn(query)
+
+    def get_time(self) -> Tuple[bool, str]:
+        from app.tools.system_tools import get_date_time as _fn
+        return _fn()
+
+    def calculate(self, expr: str) -> Tuple[bool, str]:
+        from app.tools.system_tools import calculate_expression as _fn
+        return _fn(expr)

@@ -14,3 +14,7 @@ Pillow>=10.0.0
 pystray>=0.6.0
 keyboard>=0.13.5
 pyinstaller>=6.0.0
+psutil>=5.9.0
+send2trash>=1.8.0
+pycaw>=20230407; sys_platform == "win32"
+pyperclip>=1.8.0

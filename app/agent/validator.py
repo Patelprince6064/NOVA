@@ -9,12 +9,14 @@ from app.pc.controller import APPLICATION_ALIASES, WEBSITE_ALIASES, KEY_ALIASES,
 
 logger = logging.getLogger(__name__)
 
-# Dangerous patterns that must reject entire task
+# Dangerous patterns that must reject entire task — file delete/shutdown handled via confirmation
 DANGEROUS_PATTERNS = [
-    "delete", "format", "rm ", "shutdown", "kill ", "uninstall", "password", "bank", "purchase", "buy ", "payment",
+    "format", "rm ", "uninstall", "password", "bank", "purchase", "buy ", "payment",
     "install ", "send email", "send message", "share private", "credential", "account recovery", "captcha", "security settings",
     "log into", "log in", "sign in", "login", "read my emails", "read emails", "reply to", "attach a file", "send it",
 ]
+# Patterns that require confirmation but are allowed via structured action
+CONFIRM_PATTERNS = ["delete", "shutdown", "restart", "kill ", "hibernate", "sleep"]
 
 MAX_WAIT_SECONDS = 10  # default, overridden by config
 
@@ -34,6 +36,32 @@ def _validate_step_params(step: TaskStep, config) -> Tuple[bool, str]:
         if not 0 < sec <= max_wait:
             return False, f"wait seconds out of range (1-{max_wait})"
         step.parameters = {"seconds": sec}
+        return True, ""
+    # Allowlisted simple actions with no params
+    if action in ("minimize_window", "maximize_window", "restore_window", "close_window", "show_desktop", "volume_up", "volume_down", "mute", "unmute", "media_play_pause", "media_next", "media_previous", "take_screenshot", "clipboard_read", "clipboard_clear", "system_info", "cpu_info", "memory_info", "storage_info", "battery_info", "network_info", "get_time", "list_apps", "copy", "paste", "cut", "select_all", "undo", "redo", "click", "double_click", "right_click", "capture_screen", "get_active_window"):
+        return True, ""
+    if action in ("set_volume",):
+        lvl = params.get("level") or params.get("volume") or params.get("amount")
+        try:
+            lvl = int(lvl) if lvl is not None else 50
+        except Exception:
+            return False, "set_volume requires int level"
+        if not 0 <= lvl <= 100:
+            return False, "volume out of range 0-100"
+        step.parameters = {"level": lvl}
+        return True, ""
+    if action in ("switch_window", "move_window", "open_settings", "process_info"):
+        return True, ""
+    if action in ("open_folder", "open_file", "create_folder", "search_files", "list_apps", "find_app"):
+        return True, ""
+    if action in ("rename_file", "rename_folder", "copy_file", "move_file", "delete_file"):
+        # These will require confirmation at execution time, not validation reject
+        return True, ""
+    if action in ("lock_pc", "shutdown_pc", "restart_pc", "sleep_pc"):
+        return True, ""
+    if action == "calculate":
+        return True, ""
+    if action == "close_application":
         return True, ""
 
     if action == "open_application":
