@@ -14,7 +14,13 @@ def _normalize(text: str) -> str:
     if not text:
         return ""
     t = text.strip().lower()
-    for pref in ("hey nova,", "hey nova ", "hey nova:", "nova,"):
+    for pref in (
+        "hey nova,", "hey nova ", "hey nova:", "nova,",
+        "hey noah,", "hey noah ", "hey noah:", "noah,",
+        "hey noa,", "hey noa ", "hey noa:", "noa,",
+        "hay nova,", "hay nova ", "hay noah,", "hay noah ",
+        "hey nora,", "hey nora ",
+    ):
         if t.startswith(pref):
             t = t[len(pref):].strip()
             break

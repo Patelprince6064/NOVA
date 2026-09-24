@@ -30,8 +30,14 @@ def _normalize(text: str) -> str:
     if not text:
         return ""
     t = text.strip().lower()
-    # Remove leading wake word if still present
-    for prefix in ("hey nova,", "hey nova ", "hey nova:", "nova,"):
+    # Remove leading wake word if still present (include common Whisper mishearings: Noah/Noa/Nora)
+    for prefix in (
+        "hey nova,", "hey nova ", "hey nova:", "nova,",
+        "hey noah,", "hey noah ", "hey noah:", "noah,",
+        "hey noa,", "hey noa ", "hey noa:", "noa,",
+        "hay nova,", "hay nova ", "hay nova:", "hay noah,", "hay noah ",
+        "hey nora,", "hey nora ",
+    ):
         if t.startswith(prefix):
             t = t[len(prefix):].strip()
             break
@@ -111,12 +117,15 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
         if norm in ("hello", "hello nova", "hi", "hey"):
             return False, "Hello! I'm Nova." if "hello" in norm else "Hi! I'm ready."
     # More precise: if norm is hello or hi standalone
-    if norm in ("hello", "hello nova"):
+    if norm in ("hello", "hello nova", "hello noah"):
         return False, "Hello! I'm Nova."
-    if norm in ("hi", "hi nova", "hey"):
+    if norm in ("hi", "hi nova", "hi noah", "hey"):
         return False, "Hi! I'm ready."
-    if norm == "test" or norm == "test nova":
+    if norm == "test" or norm == "test nova" or norm == "test noah":
         return False, "Voice system is working correctly."
+    # Wake-word alone (Whisper mishearing: "hey Noah" -> "hey Nova") - don't error
+    if norm in ("hey nova", "hey noah", "hey noa", "hay nova", "hay noah", "hey nora", "nova", "noah", "noa"):
+        return False, "Yes? I'm listening."
 
     # --------------------------------------------------
     # Order matters: most specific first
