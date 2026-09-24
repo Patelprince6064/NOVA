@@ -122,6 +122,18 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
                 ok, msg = controller.delete_file(params.get("path","")) if action == "delete_file" else (False, "Confirmed.")
                 return True, msg
             else:
+                # No pending but explicit "confirm <action>" -> direct execution with confirmation
+                if norm == "confirm shutdown":
+                    ok, msg = controller.shutdown_pc(confirm=True)
+                    return True, msg
+                if norm == "confirm restart":
+                    ok, msg = controller.restart_pc(confirm=True)
+                    return True, msg
+                if norm == "confirm sleep":
+                    ok, msg = controller.sleep_pc(confirm=True)
+                    return True, msg
+                if norm == "confirm delete":
+                    return True, "Which file should I delete? Say 'delete <filename>'."
                 # No pending but user said yes — treat as no-op friendly
                 if cm.is_pending() is False and norm == "yes":
                     # Might be confirmation for agent? just ignore
@@ -505,7 +517,7 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
     if norm in ("lock my pc", "lock pc", "lock the pc", "lock computer"):
         ok, msg = controller.lock_pc()
         return True, msg
-    if any(p in norm for p in ("shut down", "shutdown my pc", "shutdown pc", "restart pc", "restart my pc", "restart computer", "sleep pc", "hibernate")):
+    if any(p in norm for p in ("shut down", "shutdown", "restart", "sleep", "hibernate")):
         try:
             from app.confirm.manager import get_confirmation_manager
             cm = get_confirmation_manager()
@@ -776,8 +788,9 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
 
     # 9. Fallback: legacy hello etc already handled; if still unknown -> safe reject
     # Check for dangerous patterns explicitly and reject (never execute)
+    # Skip if already confirmed (e.g. "confirm shutdown" handled above)
     dangerous = ["delete", "format", "rm ", "shutdown", "kill ", "uninstall", "password", "send email", "send message"]
-    if any(d in norm for d in dangerous):
+    if "confirm" not in norm and any(d in norm for d in dangerous):
         logger.warning("Rejected potentially dangerous command: %r", norm[:120])
         return False, "I can't perform that action yet."
 
