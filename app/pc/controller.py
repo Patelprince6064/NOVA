@@ -78,6 +78,7 @@ APPLICATION_ALIASES = {
     "photos": "photos",
     "camera": "camera",
     "settings": "settings",
+    "setting": "settings",
     "control panel": "control",
     "task manager": "taskmgr",
     "device manager": "devmgmt",
@@ -368,9 +369,15 @@ class PCController:
 
         logger.info("Opening application: %s -> %s", name, exe)
         try:
-            # Prefer os.startfile for explorer, else subprocess without shell
+            # Prefer os.startfile for explorer/settings (ms-settings: URI), else subprocess without shell
             if app_key == "explorer":
                 os.startfile("explorer.exe")  # type: ignore
+            elif app_key == "settings":
+                # ms-settings: is a URI, must use startfile or explorer
+                try:
+                    os.startfile(exe)  # type: ignore  # e.g. "ms-settings:"
+                except Exception:
+                    subprocess.Popen(["explorer.exe", exe], shell=False)
             elif app_key in ("calc", "notepad", "mspaint", "wordpad"):
                 # These are in system32
                 subprocess.Popen([exe], shell=False)

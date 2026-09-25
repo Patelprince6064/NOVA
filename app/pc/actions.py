@@ -503,14 +503,14 @@ def handle_command(text: str, controller: PCController) -> Tuple[bool, str]:
     if norm in ("redo", "redo that"):
         ok, msg = controller.hotkey("ctrl", "y")
         return True, msg
-    # settings
-    if "open" in norm and "settings" in norm:
+    # settings — handle both "settings" and singular "setting" (Whisper often drops the 's')
+    if "open" in norm and ("settings" in norm or "setting" in norm):
         # "open wifi settings", "open bluetooth settings" etc
         for page in ("wifi", "bluetooth", "display", "sound", "personalization", "update", "privacy", "apps", "accounts", "system"):
             if page in norm:
                 ok, msg = controller.open_settings(page)
                 return True, msg
-        if "settings" in norm:
+        if "settings" in norm or "setting" in norm:
             ok, msg = controller.open_settings("")
             return True, msg
     # lock / shutdown / restart / sleep
