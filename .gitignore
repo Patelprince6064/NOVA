@@ -31,8 +31,6 @@ desktop.ini
 
 # Whisper model cache (huggingface)
 # Uncomment if you want to ignore cached models:
-# .cache/
-
 # Logs
 logs/
 *.log
